@@ -1,0 +1,24 @@
+# Dependencies & executables
+*.exe
+Antigravity IDE.exe
+
+# Excel collection workbooks & raw data dumps
+*.xlsx
+*.xlsm
+*.xls
+workbook_data.txt
+
+# Environment & OS files
+.DS_Store
+Thumbs.db
+*.log
+
+# Next.js
+node_modules
+.next
+out
+.vercel
+*.tsbuildinfo
+
+# Local agent state
+.claude-flow
