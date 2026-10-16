@@ -22,3 +22,4 @@ out
 
 # Local agent state
 .claude-flow
+.dyad/
