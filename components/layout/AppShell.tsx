@@ -9,7 +9,7 @@ import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { collapsed, navOpen, closeNav, handleFile } = useStore();
+  const { collapsed, navOpen, closeNav, handleFile, openUpload } = useStore();
 
   useEffect(() => {
     if (!navOpen) return;
@@ -30,8 +30,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       onDrop={(e) => {
         e.preventDefault();
         const file = e.dataTransfer.files?.[0];
-        if (file && (file.name.endsWith(".xlsx") || file.name.endsWith(".xlsm"))) {
-          handleFile(file);
+        if (file && /\.(xlsx|xlsm)$/i.test(file.name)) {
+          handleFile(file).then((errors) => {
+            if (errors.length > 0) openUpload();
+          });
         }
       }}
     >

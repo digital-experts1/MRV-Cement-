@@ -10,7 +10,7 @@ import { NAV_SECTIONS, ROUTES } from "@/lib/routes";
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { toggleSidebar, closeNav } = useStore();
+  const { toggleSidebar, closeNav, openUpload } = useStore();
   const { showExplanation } = useExplainer();
 
   useEffect(() => {
@@ -65,6 +65,20 @@ export function Sidebar() {
           </div>
         ))}
       </nav>
+      <div className="sidebar-footer">
+        <button
+          type="button"
+          className="sidebar-upload-btn"
+          id="sidebar-upload-btn"
+          onClick={openUpload}
+          aria-label="Upload Readings File"
+          aria-haspopup="dialog"
+          title="Upload Readings File"
+        >
+          <Icon name="upload" size={16} />
+          <span className="sidebar-upload-label">Upload Readings File</span>
+        </button>
+      </div>
     </aside>
   );
 }

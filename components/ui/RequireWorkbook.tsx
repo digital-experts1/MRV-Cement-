@@ -6,7 +6,7 @@ import { EmptyState, ErrorBanner, LoadingState } from "./EmptyState";
 import { Icon } from "@/components/icons/Icon";
 
 export function RequireWorkbook({ title, children }: { title: string; children: (store: NonNullable<ReturnType<typeof useStore>["store"]>) => ReactNode }) {
-  const { store, loading } = useStore();
+  const { store, loading, openUpload } = useStore();
 
   if (loading) return <LoadingState />;
   if (!store || !store._valid) {
@@ -20,9 +20,9 @@ export function RequireWorkbook({ title, children }: { title: string; children: 
             </div>
             <div className="state-title">Try a different file</div>
             <div className="state-sub">Upload a valid V28 workbook to get started</div>
-            <label className="btn btn-primary" htmlFor="file-input" style={{ cursor: "pointer", marginTop: 8 }}>
-              <Icon name="upload" size={14} /> Choose Workbook
-            </label>
+            <button type="button" className="btn btn-primary" style={{ marginTop: 8 }} onClick={openUpload} aria-haspopup="dialog">
+              <Icon name="upload" size={14} /> Upload Readings File
+            </button>
           </div>
         </>
       );

@@ -8,7 +8,7 @@ import { useStore } from "@/context/StoreContext";
 import { downloadExcel, downloadPDF } from "@/lib/export";
 
 export function Topbar() {
-  const { store, toggleSidebar, handleFile } = useStore();
+  const { store, toggleSidebar, openUpload } = useStore();
   const { showExplanation } = useExplainer();
   const [pdfBusy, setPdfBusy] = useState(false);
 
@@ -46,20 +46,16 @@ export function Topbar() {
             <QaDot status={qaStatus} /> <span className="btn-label">QA/QC</span> {qaStatus}
           </span>
         ) : null}
-        <label className="btn btn-secondary btn-sm" htmlFor="file-input" title="Load Workbook" style={{ cursor: "pointer" }}>
-          <Icon name="upload" size={14} /> <span className="btn-label">Load Workbook</span>
-        </label>
-        <input
-          type="file"
-          id="file-input"
-          accept=".xlsx,.xlsm"
-          style={{ display: "none" }}
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) handleFile(file);
-            e.target.value = "";
-          }}
-        />
+        <button
+          className="btn btn-secondary btn-sm"
+          type="button"
+          title="Upload Readings File"
+          aria-label="Upload Readings File"
+          aria-haspopup="dialog"
+          onClick={openUpload}
+        >
+          <Icon name="upload" size={14} /> <span className="btn-label">Upload Readings File</span>
+        </button>
         <button className="btn btn-primary btn-sm" id="btn-download-pdf" type="button" title={pdfBusy ? "Generating PDF" : "Get Report"} onClick={onPdf} disabled={pdfBusy} onContextMenu={(e) => { e.preventDefault(); showExplanation("btn-download-pdf"); }}>
           <Icon name="download" size={14} /> <span className="btn-label">{pdfBusy ? "Generating PDF..." : "Get Report"}</span>
         </button>

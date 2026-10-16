@@ -14,9 +14,13 @@ interface StoreContextValue {
   navOpen: boolean;
   toggleSidebar: () => void;
   closeNav: () => void;
-  handleFile: (file: File) => void;
+  /** Resolves with the import errors; an empty array means the workbook loaded successfully. */
+  handleFile: (file: File) => Promise<string[]>;
   setStoreData: (store: Store) => void;
   clearStore: () => void;
+  uploadOpen: boolean;
+  openUpload: () => void;
+  closeUpload: () => void;
 }
 
 const StoreContext = createContext<StoreContextValue | null>(null);
@@ -57,39 +61,68 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setParseError(null);
   }, []);
 
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const openUpload = useCallback(() => setUploadOpen(true), []);
+  const closeUpload = useCallback(() => {
+    setUploadOpen(false);
+    setParseError(null);
+  }, []);
+
   const handleFile = useCallback((file: File) => {
     setLoading(true);
     setParseError(null);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const result = e.target?.result;
-        if (!(result instanceof ArrayBuffer)) {
-          setParseError("Could not read the selected file.");
+    return new Promise<string[]>((resolve) => {
+      const fail = (errors: string[]) => {
+        setParseError(errors.join("\n"));
+        resolve(errors);
+      };
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const result = e.target?.result;
+          if (!(result instanceof ArrayBuffer)) {
+            fail(["Could not read the selected file."]);
+            return;
+          }
+          const next = parseWorkbook(result, file.name);
+          // Never replace a valid loaded dataset with a failed import.
+          setStore((prev) => (next._valid || !prev?._valid ? next : prev));
+          if (next._valid) {
+            resolve([]);
+          } else {
+            fail(next._errors.length > 0 ? next._errors : ["The workbook could not be validated."]);
+          }
+        } catch (err) {
+          fail([err instanceof Error ? err.message : "Failed to parse workbook"]);
+        } finally {
           setLoading(false);
-          return;
         }
-        const next = parseWorkbook(result, file.name);
-        setStore(next);
-        if (!next._valid && next._errors.length > 0) {
-          setParseError(next._errors.join("\n"));
-        }
-      } catch (err) {
-        setParseError(err instanceof Error ? err.message : "Failed to parse workbook");
-      } finally {
+      };
+      reader.onerror = () => {
         setLoading(false);
-      }
-    };
-    reader.onerror = () => {
-      setParseError("Failed to read the selected file.");
-      setLoading(false);
-    };
-    reader.readAsArrayBuffer(file);
+        fail(["Failed to read the selected file."]);
+      };
+      reader.readAsArrayBuffer(file);
+    });
   }, []);
 
   const value = useMemo(
-    () => ({ store, loading, parseError, collapsed, navOpen, toggleSidebar, closeNav, handleFile, setStoreData, clearStore }),
-    [store, loading, parseError, collapsed, navOpen, toggleSidebar, closeNav, handleFile, setStoreData, clearStore]
+    () => ({
+      store,
+      loading,
+      parseError,
+      collapsed,
+      navOpen,
+      toggleSidebar,
+      closeNav,
+      handleFile,
+      setStoreData,
+      clearStore,
+      uploadOpen,
+      openUpload,
+      closeUpload,
+    }),
+    [store, loading, parseError, collapsed, navOpen, toggleSidebar, closeNav, handleFile, setStoreData, clearStore, uploadOpen, openUpload, closeUpload]
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

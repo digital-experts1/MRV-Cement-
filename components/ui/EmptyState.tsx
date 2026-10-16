@@ -4,7 +4,7 @@ import { Icon } from "@/components/icons/Icon";
 import { useStore } from "@/context/StoreContext";
 
 export function EmptyState({ title }: { title: string }) {
-  const { handleFile } = useStore();
+  const { openUpload } = useStore();
 
   return (
     <div className="state-box">
@@ -13,20 +13,9 @@ export function EmptyState({ title }: { title: string }) {
       </div>
       <div className="state-title">No data loaded yet</div>
       <div className="state-sub">Upload your TRACE FORCE MRV workbook to view {title.toLowerCase()}.</div>
-      <label className="btn btn-primary" htmlFor="file-input" style={{ cursor: "pointer", marginTop: 8 }}>
-        <Icon name="upload" size={14} /> Choose Workbook
-      </label>
-      <input
-        type="file"
-        id="file-input-empty"
-        accept=".xlsx,.xlsm"
-        style={{ display: "none" }}
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleFile(file);
-          e.target.value = "";
-        }}
-      />
+      <button type="button" className="btn btn-primary" style={{ marginTop: 8 }} onClick={openUpload} aria-haspopup="dialog">
+        <Icon name="upload" size={14} /> Upload Readings File
+      </button>
     </div>
   );
 }
