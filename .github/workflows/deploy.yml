@@ -1,0 +1,45 @@
+name: Deploy Cement MRV
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cementmrv-server
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main' && vars.CEMENT_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: cementmrv
+      url: https://cementmrv.traceforce.net
+    steps:
+      - name: Deploy exact commit over verified SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.CEMENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.CEMENT_DEPLOY_PORT }}
+          DEPLOY_KEY: ${{ secrets.CEMENT_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.CEMENT_KNOWN_HOSTS }}
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?Set CEMENT_DEPLOY_HOST}"
+          : "${DEPLOY_KEY:?Set CEMENT_DEPLOY_KEY}"
+          : "${KNOWN_HOSTS:?Set CEMENT_KNOWN_HOSTS}"
+          [[ "$COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          DEPLOY_PORT=${DEPLOY_PORT:-22}
+          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/cement_key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          trap 'rm -f "$HOME/.ssh/cement_key"' EXIT
+          ssh -T -i "$HOME/.ssh/cement_key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+            "cementmrv@$DEPLOY_HOST" "deploy $COMMIT_SHA"
