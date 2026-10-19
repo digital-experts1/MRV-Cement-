@@ -10,7 +10,7 @@ import { resolveRange, validateSpec, zonedStartOfDayUtc, type RangeSpec } from "
 import { rebuildInput, toConfigDrafts, toReadingDrafts, type ReadingSection, type StoredReading } from "@/lib/mrv/readings";
 import { computeCoverage, requiredSectionsFor, selectForRange } from "@/lib/mrv/rangeSelection";
 import { checkRunIntegrity, ENGINE_VERSION, inputSha, resultsFingerprint, resultsOf, restoreStore, scopeInputToRange } from "@/lib/mrv/snapshot";
-import { granularityOf, MAPPING_VERSION, type ImportMapping } from "@/lib/mrv/importMapping";
+import { granularityOf, MAPPING_VERSION, parseMapping, serializeMapping, type ImportMapping } from "@/lib/mrv/importMapping";
 import { deriveIntervals } from "@/lib/mrv/cumulative";
 import { planRun, selectConfig, type ConfigDoc } from "@/lib/mrv/executorPayload";
 import { sha256Json } from "@/lib/mrv/sha";
@@ -174,6 +174,44 @@ export const MRV_CASES: MrvCase[] = [
       eq(granularityOf("2024-02-01", "2024-02-29", "interval_total"), "month", "leap February is a month");
       eq(granularityOf("2025-02-01", "2025-02-28", "interval_total"), "month", "non-leap February is a month");
       eq(granularityOf("2024-02-01", "2024-02-28", "interval_total"), "custom", "Feb 1–28 in a leap year is NOT a month");
+    },
+  },
+  {
+    id: "HS-05",
+    name: "Per-sheet mappings: monthly production next to a quarter-total fuel row dated 31 March; transport form is strict",
+    run: () => {
+      const m = parseMapping("default=calendar_month_of_date;kilnFuel=calendar_quarter_of_date")!;
+      eq([m.interval, m.sections], ["calendar_month_of_date", { kilnFuel: "calendar_quarter_of_date" }], "parsed");
+      eq(serializeMapping("calendar_month_of_date", { kilnFuel: "calendar_quarter_of_date" }), "default=calendar_month_of_date;kilnFuel=calendar_quarter_of_date", "round trip");
+      eq(serializeMapping("single_day_of_date", {}), "single_day_of_date", "plain form kept");
+      for (const bad of ["kilnFuel=nope", "default=calendar_month_of_date;default=single_day_of_date", "secret=calendar_month_of_date", "x", ""]) eq(parseMapping(bad), null, `rejected: ${bad}`);
+      const ds = createSampleDataset();
+      ds.kilnFuel = ds.kilnFuel.map((x, i) => ({ ...x, Date: "2025-03-31", "Fuel Type": `Fuel ${i}` }));
+      const res = toReadingDrafts(ds, m);
+      eq(res.errors, [], "no errors");
+      const fuel = res.readings.filter((x) => x.section === "kilnFuel");
+      ok(fuel.every((x) => x.interval_start === "2025-01-01" && x.interval_end === "2025-03-31" && x.granularity === "quarter"), "fuel = Q1 totals");
+      const prod = res.readings.find((x) => x.section === "production" && x.observed_on === "2025-03-31")!;
+      eq([prod.interval_start, prod.granularity], ["2025-03-01", "month"], "production stays monthly");
+      const onlyFuel = toReadingDrafts(ds, parseMapping("kilnFuel=calendar_quarter_of_date"));
+      ok(onlyFuel.errors.length > 0 && onlyFuel.errors.every((e) => /no import mapping was declared for this sheet/.test(e)), "undeclared sheets are rejected, not defaulted");
+      // March-only range must not receive the quarter fuel total.
+      const sel = selectForRange(stored(res.readings), "2025-03-01", "2025-03-31");
+      ok(sel.included.every((x) => x.section !== "kilnFuel"), "quarter fuel total is not attributed to March");
+    },
+  },
+  {
+    id: "EN-01",
+    name: "Carbonate content written as a fraction under a '%' header is rejected as ambiguous, never rescaled",
+    run: () => {
+      const ds = createSampleDataset();
+      ds.setup["Selected calcination method"] = "Method A - raw material input";
+      ds.rawMaterial = ds.rawMaterial.map((x) => ({ ...x, "CaCO3 %": 0.95, "MgCO3 %": 0.02 }));
+      const s = calculateStore(ds, "demo");
+      eq(s.calculations["Process CO2 Method A"].Value, null, "Method A not calculated");
+      eq(s.calculations["Total Embedded CO2"].Value, null, "total not calculated (missing is never zero)");
+      eq(s.inputIssues.filter((x) => /ambiguous unit/.test(x.reason)).length, ds.rawMaterial.length * 2, "both carbonate fields reported per row");
+      ok(calculateStore(createSampleDataset(), "demo").inputIssues.length === 0, "percent inputs (78.5) unaffected");
     },
   },
   {

@@ -97,7 +97,7 @@ export function toReadingDrafts(input: MrvInput, mapping: ImportMapping | null, 
     input[section].forEach((row, i) => {
       const src = (row._source ?? {}) as RowSource;
       const where = src.sheet && src.row ? `${src.sheet} row ${src.row}` : `${SECTION_LABELS_CLIENT[section]} entry ${i + 1}`;
-      const iv = resolveRowInterval(row, mapping);
+      const iv = resolveRowInterval(row, mapping, section);
       if (typeof iv === "string") {
         errors.push(`${where}: ${iv}.`);
         return;

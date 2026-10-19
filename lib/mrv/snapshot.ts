@@ -14,7 +14,8 @@ import { calculateStore } from "@/lib/calcEngine";
 import type { MrvInput, Store } from "@/lib/types";
 import { sha256Json } from "./sha";
 
-export const ENGINE_VERSION = "trace-mrv-engine/2026.10-d06";
+// d06.1: per-sheet interval mappings; carbonate content in (0, 1] under a "%" header is rejected as ambiguous.
+export const ENGINE_VERSION = "trace-mrv-engine/2026.10-d06.1";
 export const METHODOLOGY_VERSION = "TRACE-FORCE-MRV-Cement-V28";
 
 export type RunResults = Omit<Store, "inputs">;

@@ -138,6 +138,22 @@ export function calcRawMaterialRow(row: SheetRow, issues: InputIssue[] = [], idx
     "Moisture %": f("Moisture %"),
     "Calcination Conversion": f("Calcination Conversion"),
   };
+  // The columns are percentages. A CaCO3 content in (0, 1] is not plausible as a percent for carbonate raw meal and is
+  // what a fraction (0.95 = 95 %) looks like; the row's unit convention is ambiguous, so neither carbonate value is used.
+  const ca = d["CaCO3 %"];
+  if (ca !== null && ca.gt(0) && ca.lte(1)) {
+    for (const field of ["CaCO3 %", "MgCO3 %"]) {
+      if (d[field] === null) continue;
+      issues.push({
+        section: S,
+        row: rowRef(row, idx),
+        field,
+        raw: row[field],
+        reason: "ambiguous unit: CaCO3 % is between 0 and 1, which looks like a fraction. Enter percentages (e.g. 95 for 95 %); the value was not converted",
+      });
+      d[field] = null;
+    }
+  }
   const pct = (v: Dec) => (v === null ? null : v.div(100));
   d["CaCO3 CO2 t"] = mulAll(d["Quantity t"], pct(d["CaCO3 %"]), CACO3_RATIO, d["Calcination Conversion"]);
   d["MgCO3 CO2 t"] = mulAll(d["Quantity t"], pct(d["MgCO3 %"]), MGCO3_RATIO, d["Calcination Conversion"]);

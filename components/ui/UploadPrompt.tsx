@@ -6,7 +6,6 @@ import { Icon } from "@/components/icons/Icon";
 import { useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { downloadBlankTemplate } from "@/lib/export";
-import type { IntervalMapping } from "@/lib/mrv/importMapping";
 import { MappingSelect } from "./MappingSelect";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), [tabindex]:not([tabindex="-1"])';
@@ -19,7 +18,7 @@ export function UploadPrompt() {
   const ready = scope.status === "ready" && !!scope.facility;
   const [errors, setErrors] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [mapping, setMapping] = useState<IntervalMapping | "">("");
+  const [mapping, setMapping] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
   const chooseRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);

@@ -34,7 +34,8 @@ project fallback**: `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_PUBLISHAB
 
 ## Rules (current)
 - Intervals come from row columns (`Interval Start`, `Interval End`, `Measurement Type`) or an explicit import mapping
-  (`lib/mrv/importMapping.ts`). Ambiguous rows are rejected. See doc 12 for selection, reconciliation, coverage, config and run rules.
+  (`lib/mrv/importMapping.ts`), declared for the whole file or per sheet (e.g. monthly production + quarter-total fuel).
+  Ambiguous rows are rejected. See doc 12 for selection, reconciliation, coverage, config and run rules.
 - Re-imports: same file → `duplicate`; same record with identical values → `unchanged`; changed values → new revision.
 - Rejected imports are recorded and never replace the displayed dataset. Synthetic data only in synthetic organizations.
 

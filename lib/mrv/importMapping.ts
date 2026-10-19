@@ -13,14 +13,19 @@ import { daysInMonth, parseDate, ymd } from "./dateRanges";
 
 export const MAPPING_VERSION = "trace-row-interval/v1";
 
-export const INTERVAL_MAPPINGS = ["declared_columns", "calendar_month_of_date", "single_day_of_date"] as const;
+export const INTERVAL_MAPPINGS = ["declared_columns", "calendar_month_of_date", "calendar_quarter_of_date", "single_day_of_date"] as const;
 export type IntervalMapping = (typeof INTERVAL_MAPPINGS)[number];
 
 export const MAPPING_LABELS: Record<IntervalMapping, string> = {
   declared_columns: "Every row states its own 'Interval Start' and 'Interval End' columns",
   calendar_month_of_date: "Each row is the total for the calendar month containing its Date",
+  calendar_quarter_of_date: "Each row is the total for the calendar quarter containing its Date",
   single_day_of_date: "Each row is the total for the single day of its Date",
 };
+
+/** Sections that can carry their own mapping (same list as READING_SECTIONS; kept here so this file stays browser-safe). */
+export const MAPPABLE_SECTIONS = ["production", "rawMaterial", "kilnFuel", "electricity", "inventory"] as const;
+export type MappableSection = (typeof MAPPABLE_SECTIONS)[number];
 
 export const MEASUREMENT_TYPES = ["interval_total", "cumulative_meter", "sample"] as const;
 export type MeasurementType = (typeof MEASUREMENT_TYPES)[number];
@@ -28,13 +33,47 @@ export type Granularity = "day" | "month" | "quarter" | "year" | "custom" | "ins
 
 export interface ImportMapping {
   version: typeof MAPPING_VERSION;
-  interval: IntervalMapping;
+  /** Applies to every section without its own entry; null = no default (such rows need their own columns or a section entry). */
+  interval: IntervalMapping | null;
+  /** Per-sheet declarations, e.g. monthly production rows next to quarter-total fuel rows in one workbook. */
+  sections?: Partial<Record<MappableSection, IntervalMapping>>;
 }
 
+const isInterval = (v: string): v is IntervalMapping => (INTERVAL_MAPPINGS as readonly string[]).includes(v);
+
+/**
+ * Parses the transport form: either a single mapping name (all sections), or `default=<m>;kilnFuel=<m>;…` pairs.
+ * Anything unknown, duplicated or empty is rejected (null) — never partially applied.
+ */
 export function parseMapping(value: unknown): ImportMapping | null {
-  return typeof value === "string" && (INTERVAL_MAPPINGS as readonly string[]).includes(value)
-    ? { version: MAPPING_VERSION, interval: value as IntervalMapping }
-    : null;
+  if (typeof value !== "string" || value.length > 400) return null;
+  if (isInterval(value)) return { version: MAPPING_VERSION, interval: value };
+  let interval: IntervalMapping | null = null;
+  const sections: Partial<Record<MappableSection, IntervalMapping>> = {};
+  const seen = new Set<string>();
+  for (const pair of value.split(";")) {
+    const [key, v, extra] = pair.split("=");
+    if (extra !== undefined || !key || !v || !isInterval(v) || seen.has(key)) return null;
+    seen.add(key);
+    if (key === "default") interval = v;
+    else if ((MAPPABLE_SECTIONS as readonly string[]).includes(key)) sections[key as MappableSection] = v;
+    else return null;
+  }
+  if (!interval && Object.keys(sections).length === 0) return null;
+  return Object.keys(sections).length ? { version: MAPPING_VERSION, interval, sections } : { version: MAPPING_VERSION, interval };
+}
+
+/** Inverse of parseMapping (client → API). Returns "" when nothing is declared. */
+export function serializeMapping(interval: IntervalMapping | "", sections: Partial<Record<MappableSection, IntervalMapping | "">>): string {
+  const pairs = MAPPABLE_SECTIONS.filter((s) => sections[s]).map((s) => `${s}=${sections[s]}`);
+  if (!pairs.length) return interval;
+  return [...(interval ? [`default=${interval}`] : []), ...pairs].join(";");
+}
+
+/** The mapping that governs one section, or null when nothing was declared for it. */
+export function mappingFor(mapping: ImportMapping | null, section: MappableSection | undefined): IntervalMapping | null {
+  if (!mapping) return null;
+  return (section && mapping.sections?.[section]) || mapping.interval;
 }
 
 export interface ResolvedInterval {
@@ -64,7 +103,8 @@ const blank = (v: unknown) => v === null || v === undefined || String(v).trim() 
 /**
  * Resolves one row's interval. Returns an error string instead of guessing when the row is ambiguous or inconsistent.
  */
-export function resolveRowInterval(row: Record<string, unknown>, mapping: ImportMapping | null): ResolvedInterval | string {
+export function resolveRowInterval(row: Record<string, unknown>, importMapping: ImportMapping | null, section?: MappableSection): ResolvedInterval | string {
+  const mapping = mappingFor(importMapping, section);
   const mtRaw = blank(row["Measurement Type"]) ? "interval_total" : String(row["Measurement Type"]).trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (!(MEASUREMENT_TYPES as readonly string[]).includes(mtRaw)) return `unknown Measurement Type "${String(row["Measurement Type"])}"`;
   const measurement = mtRaw as MeasurementType;
@@ -89,18 +129,23 @@ export function resolveRowInterval(row: Record<string, unknown>, mapping: Import
     if (date && (date < start || date > end)) return `Date ${date} lies outside the stated interval ${start} – ${end}`;
     basis = "row_columns";
   } else {
-    if (!mapping) return "the row has only a Date and no import mapping was declared; choose how dated rows are interpreted (never inferred)";
-    if (mapping.interval === "declared_columns") return "missing Interval Start / Interval End (required by the declared mapping)";
+    if (!mapping) return "the row has only a Date and no import mapping was declared for this sheet; choose how its dated rows are interpreted (never inferred)";
+    if (mapping === "declared_columns") return "missing Interval Start / Interval End (required by the declared mapping)";
     if (!date) return "missing Date";
-    const implied = impliedByMapping(date, mapping.interval);
+    const implied = impliedByMapping(date, mapping);
     start = implied.start;
     end = implied.end;
-    basis = mapping.interval;
+    basis = mapping;
   }
   return { interval_start: start, interval_end: end, granularity: granularityOf(start, end, measurement), measurement_type: measurement, interval_basis: basis };
 }
 
 function impliedByMapping(date: string, interval: Exclude<IntervalMapping, "declared_columns">): { start: string; end: string } {
   const p = parseDate(date)!;
-  return interval === "calendar_month_of_date" ? { start: ymd(p.y, p.m, 1), end: ymd(p.y, p.m, daysInMonth(p.y, p.m)) } : { start: date, end: date };
+  if (interval === "calendar_month_of_date") return { start: ymd(p.y, p.m, 1), end: ymd(p.y, p.m, daysInMonth(p.y, p.m)) };
+  if (interval === "calendar_quarter_of_date") {
+    const qs = p.m - ((p.m - 1) % 3);
+    return { start: ymd(p.y, qs, 1), end: ymd(p.y, qs + 2, daysInMonth(p.y, qs + 2)) };
+  }
+  return { start: date, end: date };
 }

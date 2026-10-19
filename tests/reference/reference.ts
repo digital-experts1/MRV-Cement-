@@ -3,9 +3,12 @@
  * lib/numeric: formulas are re-implemented from the methodology text (IPCC 2006 Vol. 3 Ch. 2 carbonate stoichiometry,
  * fuel energy × EF × oxidation, grid MWh × EF) directly on raw input rows.
  *
- * STATUS: the original Q1 2025 workbooks and the audit report are NOT available in this repository or in the chat
- * attachments. This register therefore runs ONLY on the labelled SYNTHETIC fixture and is NOT a real-Q1 validation.
- * When the real files are supplied, run `discrepancyRegister(realInput, appStore, sourceCells)` on them.
+ * Runs on the labelled SYNTHETIC fixture (tests/mrv/cases.ts RF-01) and on the supplied Q1 2025 collection workbook
+ * (tests/reference/q1.ts). That workbook is itself labelled DEMO ("Cement_QAQC_V28_Demo", "Demo Cement Plant"), so the
+ * Q1 register is a reconciliation against a demo workbook — not a validation against real plant records.
+ *
+ * Unit rule (same as the column headers): "CaCO3 %" / "MgCO3 %" are percentages. A CaCO3 value in (0, 1] is a fraction
+ * written under a percent header; the reference refuses to pick a convention and returns null (not comparable).
  */
 import Decimal from "decimal.js";
 
@@ -63,6 +66,7 @@ export function referenceMetrics(inp: ReferenceInput) {
     const ca = d(r["CaCO3 %"]);
     const mg = d(r["MgCO3 %"]);
     const conv = d(r["Calcination Conversion"]);
+    if (ca && ca.gt(0) && ca.lte(1)) return null; // ambiguous unit — see header
     return q && ca && mg && conv ? q.mul(ca.div(100).mul(caco3).plus(mg.div(100).mul(mgco3))).mul(conv) : null;
   });
   const efRow = inp.constants.find((r) => r["Constant / Factor"] === "Selected clinker process EF");
@@ -79,6 +83,17 @@ export function referenceMetrics(inp: ReferenceInput) {
     });
   const energy = sum(inp.kilnFuel, (r) => mul(d(r.Quantity), d(r["NCV GJ/unit"])));
   const grid = sum(inp.electricity, (r) => mul(d(r["Grid MWh"]), d(r["Grid EF tCO2/MWh"])));
+  const gridMWh = sum(inp.electricity, (r) => d(r["Grid MWh"]));
+  // Alternative fuel = any biomass content, or a waste-derived fuel by name (RDF, tyres, biomass, waste).
+  const altEnergy = sum(inp.kilnFuel, (r) => {
+    const bio = d(r["Biomass Fraction"]);
+    const alt = (bio !== null && bio.gt(0)) || /rdf|tyre|tire|biomass|waste/i.test(String(r["Fuel Type"] ?? ""));
+    return alt ? mul(d(r.Quantity), d(r["NCV GJ/unit"])) : new Decimal(0);
+  });
+  const fossil = fuel("fossil");
+  const direct = process && fossil ? process.plus(fossil) : null;
+  const total = direct && grid ? direct.plus(grid) : null;
+  const per = (a: Decimal | null, b: Decimal | null) => (a && b && !b.isZero() ? a.div(b) : null);
   const clinkerInv = inp.inventory.filter((r) => /clinker/i.test(String(r.Material ?? "")));
   const opening = clinkerInv.length ? d(clinkerInv[0]["Opening Stock t"]) : null;
   const closing = clinkerInv.length ? d(clinkerInv[clinkerInv.length - 1]["Closing Stock t"]) : null;
@@ -86,12 +101,21 @@ export function referenceMetrics(inp: ReferenceInput) {
   const dispatched = sum(clinkerInv, (r) => d(r["Dispatched t"]));
   const stockGap = opening && closing && clinker && used && purchased && dispatched ? closing.minus(opening.plus(clinker).plus(purchased).minus(used).minus(dispatched)) : null;
   return {
+    "Clinker Produced": clinker,
+    "Cement Produced": cement,
     "Process CO2 Method A": methodA,
     "Process CO2 Method B": methodB,
     "Selected Process CO2": process,
-    "Fuel Combustion CO2": fuel("fossil"),
+    "Fuel Combustion CO2": fossil,
     "Biogenic CO2 Memo": fuel("bio"),
+    "Direct Embedded CO2": direct,
+    "Grid Electricity MWh": gridMWh,
     "Indirect Grid CO2": grid,
+    "Total Embedded CO2": total,
+    "SEE Clinker": per(direct, clinker),
+    "Specific Embedded Emissions Cement": per(total, cement),
+    "Total Fuel Energy": energy,
+    "Thermal Substitution Rate (TSR)": energy && altEnergy ? per(altEnergy, energy)?.mul(100) ?? null : null,
     "Clinker Stockpile Delta": clinker && used ? clinker.minus(used) : null,
     "Stock movement closing difference": stockGap,
     "Specific Heat Consumption": energy && clinker && !clinker.isZero() ? energy.div(clinker) : null,
@@ -101,6 +125,15 @@ export function referenceMetrics(inp: ReferenceInput) {
 }
 
 const META: Record<string, { unit: string; formula: string; source: string }> = {
+  "Clinker Produced": { unit: "t", formula: "Σ clinker produced", source: "03_Production_Input rows" },
+  "Cement Produced": { unit: "t", formula: "Σ cement produced", source: "03_Production_Input rows" },
+  "Direct Embedded CO2": { unit: "tCO2", formula: "selected process CO2 + fossil fuel CO2", source: "derived" },
+  "Grid Electricity MWh": { unit: "MWh", formula: "Σ grid MWh", source: "06_Electricity_Input rows" },
+  "Total Embedded CO2": { unit: "tCO2", formula: "direct + indirect grid CO2", source: "derived" },
+  "SEE Clinker": { unit: "tCO2/t clinker", formula: "direct ÷ clinker produced", source: "derived" },
+  "Specific Embedded Emissions Cement": { unit: "tCO2/t cement", formula: "total ÷ cement produced", source: "derived" },
+  "Total Fuel Energy": { unit: "GJ", formula: "Σ Qty × NCV", source: "05_Kiln_Fuel_Input rows" },
+  "Thermal Substitution Rate (TSR)": { unit: "%", formula: "alt-fuel energy ÷ total fuel energy × 100 (alt = biomass > 0 or RDF/tyre/waste by name)", source: "05_Kiln_Fuel_Input rows" },
   "Process CO2 Method A": { unit: "tCO2", formula: "Σ Qty × (CaCO3%/100 × 44.01/100.09 + MgCO3%/100 × 44.01/84.31) × conversion", source: "04_Raw_Material_Input rows" },
   "Process CO2 Method B": { unit: "tCO2", formula: "Σ clinker produced × selected clinker EF", source: "03_Production_Input; 07_Constants" },
   "Selected Process CO2": { unit: "tCO2", formula: "Method selected in Setup", source: "01_Setup" },

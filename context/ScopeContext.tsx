@@ -7,7 +7,6 @@ import { ApiError, mrvFetch } from "@/lib/apiClient";
 import { parseDate, rangeKey, resolveRange, todayIn, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
 import type { CalcResponse, FacilitySummary, ImportOutcome, MeResponse, RunMeta, RunView } from "@/lib/mrv/clientTypes";
 import type { Coverage } from "@/lib/mrv/rangeSelection";
-import type { IntervalMapping } from "@/lib/mrv/importMapping";
 import type { MrvInput } from "@/lib/types";
 import { createScopeGuard, LOCAL_SCOPE, scopeId, type ActiveScope } from "@/lib/tenancy/scopeKeys";
 
@@ -64,8 +63,8 @@ interface ScopeValue {
   selectFacility: (id: string) => void;
   selectRange: (spec: RangeSpec) => void;
   recalculate: () => void;
-  importFile: (file: File, mapping?: IntervalMapping | null) => Promise<ImportOutcome | { accepted: false; errors: string[] }>;
-  saveManual: (input: MrvInput, mapping?: IntervalMapping | null) => Promise<ImportOutcome>;
+  importFile: (file: File, mapping?: string | null) => Promise<ImportOutcome | { accepted: false; errors: string[] }>;
+  saveManual: (input: MrvInput, mapping?: string | null) => Promise<ImportOutcome>;
   loadDemo: () => Promise<ImportOutcome>;
   signOut: () => Promise<void>;
   reload: () => void;
@@ -359,7 +358,7 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   );
 
   const importFile = useCallback(
-    async (file: File, mapping?: IntervalMapping | null) => {
+    async (file: File, mapping?: string | null) => {
       if (!tenantId || !facility) return { accepted: false as const, errors: ["Sign in and select a factory before importing."] };
       if (!facility.permissions.includes("upload.create")) return { accepted: false as const, errors: ["You do not have permission to import data for this factory."] };
       const bytes = await file.arrayBuffer();
@@ -377,7 +376,7 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   );
 
   const saveManual = useCallback(
-    (input: MrvInput, mapping?: IntervalMapping | null) =>
+    (input: MrvInput, mapping?: string | null) =>
       withImport((signal) =>
         mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility?.id}/manual`, { method: "POST", json: mapping ? { input, mapping } : { input }, signal })
       ),
