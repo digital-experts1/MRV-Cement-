@@ -1,6 +1,6 @@
 -- 0003_mrv_trusted_execution — Supervisor Directive 06
--- STATUS: NOT APPLIED to any remote Supabase project. Project vbxvhbnhstdfbkgjuzgs is classified by its owner as
--- "production or unsure"; apply only after explicit environment classification and review.
+-- STATUS: applied (statement by statement, additive) to vbxvhbnhstdfbkgjuzgs after the owner designated it development/test
+-- with no live customer data (2026-10-19). NOT applied to any production project; that requires separate review.
 -- Executed locally against real PostgreSQL (PGlite) by tests/mrv/dbHarness.ts together with 0001/0002.
 --
 -- Additive / non-destructive: new schema, tables, columns and functions; two CHECK constraints are widened; the two

@@ -5,16 +5,20 @@ Evidence classes used below (never merged):
 **R** = executed by the Vitest runner · **H** = hosted end-to-end (real Supabase Auth/PostgREST/Storage).
 PGlite results are **D**, real PostgreSQL semantics with a stand-in auth/storage schema — **not** hosted verification.
 
-## 1. Environment (06B §1) — BLOCKED
-- The configured Supabase project is classified **"production or unsure"** (unchanged). No other project is configured,
-  and no staging designation exists in configuration. **Required from the owner:** the project ref of a confirmed
-  non-production staging project, explicitly authorised for migrations and synthetic test logins.
-- Migration `db/supabase/0003_mrv_trusted_execution.sql` is **local only, not applied anywhere hosted**. No remote schema
-  change, secret, user or data was created. Production behaviour and data are unchanged.
-- Once authorised: inspect schema/migration history → apply 0001–0003 in order (additive) → copy the provisioned key
-  (`select key_id, encode(secret,'hex') from mrv_private.executor_key where active`) into the server environment as
-  `MRV_EXECUTOR_KEY_ID` / `MRV_EXECUTOR_KEY` (never printed or committed) → run `tests/hosted/stagingE2E.test.ts`.
+## 1. Environment (06B §1) — DONE on the designated test project
+- 2026-10-19: owner designated `vbxvhbnhstdfbkgjuzgs` as **development/test, no live customer data**, and authorised
+  additive migrations and synthetic users/organizations. Pre-check: 0 users, tenants, readings, runs, batches, objects;
+  0001/0002 present, 0003 absent.
+- 0003 applied statement by statement (additive; two CHECK constraints widened atomically). Verified afterwards:
+  `mrv_private` has no USAGE for anon/authenticated/service_role; retired RPCs not executable by anon/authenticated;
+  `mrv_import_v2` / `mrv_finalize_run` / `mrv_withdraw_reading` executable by authenticated only.
+- Executor key `exec-1` provisioned inside the database and copied into the git-ignored server environment
+  (`MRV_EXECUTOR_KEY_ID` / `MRV_EXECUTOR_KEY`); `MRV_SUPABASE_ENVIRONMENT=test`. No service-role key used anywhere.
+- Synthetic fixture: users `mrv-e2e-{a,b,c,r}@example.com`; "SYNTHETIC E2E Org A" (factories E1, E2, UI1; created via
+  `mrv_create_organization` / `mrv_add_facility` as user A), "SYNTHETIC E2E Org B" (B1, as user B); C = facility_manager
+  on E1 only; R = facility_manager on E1, revoked. All tenants `synthetic = true`.
 - `db/supabase/tests/rls_persistence_check.sql` predates 0003 (calls retired RPCs) and must not be used as 0003 evidence.
+- Not applied to any production project.
 
 ## 2. Trusted executor (06B §2)
 Signature protocol `trace-mrv-exec/v2` (`lib/mrv/executorSign.ts` ⇄ `mrv_private.verify_executor`): HMAC-SHA256 over
@@ -30,14 +34,15 @@ executor key. Forged results without that key are rejected; anyone holding the k
 
 | Requirement | PGlite (D) | Hosted (H) |
 |---|---|---|
-| Retired `mrv_record_run` / `mrv_record_import` denied | PASS | W, not run |
-| Unsigned / forged-key / altered payload / fake QA PASS rejected; no run persisted | PASS | W, not run |
-| Expired, future-dated, nonce-less, replayed signature rejected | PASS | W (expired, replay) |
-| Cross-facility and cross-operation signature rejected | PASS | W (cross-facility) |
-| Other user / cross-tenant with a valid signature rejected | PASS | W |
-| Revoked user rejected at execution time | PASS | W (needs operator-revoked login) |
-| Legitimate server calculation succeeds; import and run retries idempotent | PASS | W |
-| Concurrent import invalidates an in-flight run (40001) | PASS | — |
+| Retired `mrv_record_run` / `mrv_record_import` denied | PASS | **PASS** |
+| Direct PostgREST INSERT of a run / UPDATE of readings denied | PASS | **PASS** |
+| Unsigned / forged-key / altered payload / fake QA PASS rejected; no run persisted | PASS | **PASS** |
+| Expired, future-dated, replayed signature rejected | PASS | **PASS** (nonce-less: D only) |
+| Cross-facility and cross-operation signature rejected | PASS | **PASS** |
+| Other user / cross-tenant with a valid signature rejected | PASS | **PASS** |
+| Revoked user rejected at execution time | PASS | **PASS** |
+| Legitimate server calculation succeeds; import and run retries idempotent | PASS | **PASS** |
+| Concurrent import invalidates an in-flight run (40001) | PASS | — (not run hosted) |
 
 ## 3. Unit handling (06B §3)
 - `lib/mrv/unitMapping.ts` (`trace-source-units/v1`): importer declares `carbonate`/`moisture` = percent|fraction and
@@ -68,12 +73,22 @@ Q1-A3 quantities are dry basis. Factor scenarios kept separate: `WORKBOOK-REPRO/
 Method A is not the selected method in the workbook, so totals are unaffected. "No discrepancies" applies only to the
 comparable rows above under the stated assumptions.
 
-## 5. Signed-in application workflow (06B §4) — BLOCKED
-Login → factory → upload → mapping → readings → server calculation → QA → saved run → draft report, plus reload/restart,
-duplicate and corrected imports, invalid import, factory switching, cross-tenant/restricted factory, private download,
-and January/Q1/full-year/custom ranges, have **not** been demonstrated on hosted infrastructure (no staging project).
-Covered locally only at DB/logic level (D): duplicate/correction/invalid import, cross-tenant/factory, storage paths,
-January/Q1/custom ranges, quarter fuel not attributed to March, incomplete coverage visible.
+## 5. Signed-in application workflow (06B §4) — demonstrated (H, browser-driven, 2026-10-19)
+Real browser (Playwright) against the dev server on the test project, user A, factory UI1 (empty beforehand):
+1. Sign-in through `/signin` (Supabase Auth, cookie session) → `/overview`.
+2. Factory UI1 selected; *Upload Readings File*; mapping "calendar quarter of date"; synthetic Q1 2025 test workbook
+   (`/api/dev/synthetic-workbook`, 40,044 bytes) → HTTP 200, `accepted`, 4 readings inserted, original file stored
+   privately (1 `source_file`, 1 storage object), server calculation finalized by the trusted executor.
+3. Saved run `3f8bb4db…`: 2025-01-01 – 2025-03-31, 4 pinned inputs, QA PASS, synthetic, `executor_key_id = exec-1`,
+   total embedded CO₂ 542,835 t (displayed), "recomputation matches".
+4. Page reload → same run (same timestamp and total; "Existing calculation reused").
+5. Draft report: *Get Report* → 4-page PDF, stamped "DRAFT — not approved" and SYNTHETIC. The draft report is a
+   client-side export of the stored run; **no draft-report record is persisted** (no `report_snapshot` write path exists).
+6. Application-server restart → fresh browser context (no cookies/storage) → sign-in → factory UI1 restored from
+   `workspace_preference` → same stored run and total; database still holds exactly 1 run for UI1.
+
+Not demonstrated in the browser (DB/API level only): duplicate and corrected re-import, invalid import, cross-tenant and
+restricted factory in the UI, January/full-year range selection in the UI.
 
 ## 6. Test execution record (this environment)
 | Suite | W | D | R | H |
@@ -83,8 +98,17 @@ January/Q1/custom ranges, quarter fuel not attributed to March, incomplete cover
 | Isolation (`tests/isolation/cases.ts`) | yes | **18/18, 130 checks** (`/api/dev/isolation`) | not run | — |
 | Synthetic reference register | yes | 0 discrepancies, 1 not comparable | not run | — |
 | Q1 reconciliation (`tests/q1Reconciliation.test.ts`) | yes | module output checked via `/api/dev/q1-inspect` | **not run** | — |
-| Hosted staging (`tests/hosted/stagingE2E.test.ts`) | yes | — | skipped (guards) | **not run** |
+| Hosted cases (`tests/hosted/cases.ts`) | yes | — | not run | **43/43** via `/api/dev/hosted-e2e` (21.6 s) |
+| Browser workflow (§5) | — | — | — | **PASS** (steps 1–6) |
 | TypeScript | — | — | `tsc` clean | — |
-| Production build (`next build`) | — | — | passed | — |
+| Production build (`next build`) | — | — | passed (before hosted files) | — |
 
-The Vitest runner (`npm test`) could not be invoked from this environment; R must be produced by running `npm test`.
+Hosted 43/43 covers: Auth (4 real logins, wrong password, anonymous refused), signed import + idempotent retry,
+Q1/January/custom runs, full-year and partial-January ranges not silently calculated, run idempotency, retired RPCs and
+direct writes denied, 9 tampering/replay/cross-scope rejections with zero runs created, cross-tenant read/import denial,
+restricted factory read/import/calculate, revoked user, and private Storage (owner/restricted download, cross-tenant
+and cross-factory denied, no public URL).
+
+The Vitest runner could not be invoked from this environment. Locally:
+`npm test` (offline suites) and
+`node --env-file=.env.local ./node_modules/vitest/vitest.mjs run tests/hosted/stagingE2E.test.ts` (hosted).
