@@ -78,8 +78,10 @@ function rowStatusBadge(status: unknown): string {
 
 export default function DataEntryPage() {
   const router = useRouter();
-  const { store, setStoreData } = useStore();
-  const { active, activeKey } = useScope();
+  const { store } = useStore();
+  const { active, activeKey, saveManual, status: scopeStatus, canImport } = useScope();
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   // Drafts are keyed by user/organization/factory/period; unscoped legacy drafts only exist in the local workspace.
   const draftKey = scopedDraftKey(active);
   const localWorkspace = active.tenantId === null;
@@ -232,16 +234,27 @@ export default function DataEntryPage() {
     }
   }
 
-  function handleSubmit() {
-    const finalStore = calculateStore(formData, "manual");
-    clearDraft();
-    resolvedFor.current = `${activeKey}|${finalStore.meta.revision}`;
-    setStoreData(finalStore);
-    setBaseRevision(finalStore.meta.revision);
-    setSubmittedAlert(true);
-    setTimeout(() => {
-      router.push("/overview");
-    }, 1200);
+  // Submitting stores the rows as readings (unchanged rows are deduplicated, edited rows become new revisions) and the
+  // server recalculates the period. Rows removed from the form are not deleted from history.
+  async function handleSubmit() {
+    setSubmitError(null);
+    setSubmitting(true);
+    try {
+      const outcome = await saveManual(formData);
+      if (!outcome.accepted) {
+        setSubmitError(outcome.errors.join(" "));
+        return;
+      }
+      clearDraft();
+      setSubmittedAlert(true);
+      setTimeout(() => {
+        router.push("/overview");
+      }, 1200);
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const calc = (metric: string) => computedStore.calculations[metric]?.Value;
@@ -286,8 +299,14 @@ export default function DataEntryPage() {
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => downloadDataPackage(computedStore)} title="Re-importable data export with provenance">
               <Icon name="file-spreadsheet" size={13} /> Export Data (.json)
             </button>
-            <button type="button" className="btn btn-primary btn-sm" onClick={handleSubmit} title="Apply dataset to the platform">
-              <Icon name="check-circle" size={13} /> Submit & Apply
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => void handleSubmit()}
+              disabled={submitting || scopeStatus !== "ready" || !canImport}
+              title={scopeStatus !== "ready" ? "Sign in and select a factory to store data" : !canImport ? "You do not have permission to submit data for this factory" : "Store readings and recalculate on the server"}
+            >
+              <Icon name="check-circle" size={13} /> {submitting ? "Saving…" : "Submit & Store"}
             </button>
           </div>
         </div>
@@ -322,12 +341,18 @@ export default function DataEntryPage() {
         </div>
       )}
 
+      {submitError ? (
+        <div className="error-banner mb-lg" role="alert">
+          Not stored: {submitError} The previously stored data is unchanged.
+        </div>
+      ) : null}
+
       {submittedAlert && (
         <div className="card card-accent mb-lg" style={{ background: "var(--qa-pass-dim)", borderColor: "var(--qa-pass-border)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--qa-pass)" }}>
             <Icon name="check-circle" size={20} />
             <div>
-              <strong>Dataset applied.</strong>
+              <strong>Readings stored and recalculated on the server.</strong>
               <div style={{ fontSize: 12 }}>
                 QA/QC {qaOverall} · readiness: {computedStore.readiness.status === "READY_FOR_INTERNAL_REVIEW" ? "ready for internal review" : "not ready"}. Redirecting to Overview…
               </div>

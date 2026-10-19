@@ -8,9 +8,18 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiFetch<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
+export function apiFetch<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
+  return request<T>(`/api/v1${path}`, init);
+}
+
+/** Supabase-backed MRV API. */
+export function mrvFetch<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
+  return request<T>(`/api/mrv${path}`, init);
+}
+
+async function request<T>(url: string, init: RequestInit & { json?: unknown }): Promise<T> {
   const { json, headers, ...rest } = init;
-  const res = await fetch(`/api/v1${path}`, {
+  const res = await fetch(url, {
     credentials: "same-origin",
     cache: "no-store",
     ...rest,

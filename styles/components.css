@@ -1116,7 +1116,26 @@
   .scope-user { margin-left: 0; }
 }
 
-/* ── Sign-in user list ── */
-.signin-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px; }
-.signin-user { text-align: left; justify-content: flex-start; flex-direction: column; align-items: flex-start; white-space: normal; padding: 10px 12px; }
-.signin-user small { font-weight: 500; color: var(--text-muted); }
+/* ── Reporting range selector + persisted run status ── */
+.range-selector { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.range-resolved { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+.run-status {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 12px; margin-bottom: 10px; font-size: 12px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-sm);
+}
+.run-status-row, .run-status-cov { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.run-status-warn { color: var(--qa-warn, #B45309); font-weight: 600; }
+.run-status-note { color: var(--text-secondary); }
+
+/* ── Auth / onboarding forms ── */
+.auth-card { max-width: 460px; }
+.auth-form { display: flex; flex-direction: column; gap: 12px; }
+.auth-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.auth-field .input, .auth-field input {
+  padding: 8px 10px; font-size: 13px; font-weight: 400;
+  border: 1px solid var(--border-strong); border-radius: var(--r-xs, 4px); background: #FFFFFF; color: var(--text-primary);
+}
+.auth-field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+.auth-check { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-secondary); }
+.auth-links { display: flex; flex-wrap: wrap; gap: 14px; }

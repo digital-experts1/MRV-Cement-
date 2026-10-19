@@ -3,17 +3,20 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/icons/Icon";
+import { useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { downloadBlankTemplate } from "@/lib/export";
-import { calculateStore } from "@/lib/calcEngine";
-import { createSampleDataset } from "@/lib/sampleData";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), [tabindex]:not([tabindex="-1"])';
 const SUPPORTED = /\.(xlsx|xlsm|json)$/i;
 
 export function UploadPrompt() {
-  const { uploadOpen, closeUpload, handleFile, setStoreData, loading, parseError } = useStore();
+  const { uploadOpen, closeUpload, loading, parseError } = useStore();
+  const scope = useScope();
+  const isSynthetic = scope.memberships.find((m) => m.tenantId === scope.tenantId)?.synthetic ?? false;
+  const ready = scope.status === "ready" && !!scope.facility;
   const [errors, setErrors] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const chooseRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -53,14 +56,30 @@ export function UploadPrompt() {
       return;
     }
     setErrors([]);
-    const result = await handleFile(file);
-    if (result.length === 0) closeUpload();
-    else setErrors(result);
+    setBusy(true);
+    try {
+      const result = await scope.importFile(file);
+      if (result.accepted) closeUpload();
+      else setErrors(result.errors);
+    } catch (e) {
+      setErrors([e instanceof Error ? e.message : String(e)]);
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function loadSample() {
-    setStoreData(calculateStore(createSampleDataset()));
-    closeUpload();
+  async function loadSample() {
+    setErrors([]);
+    setBusy(true);
+    try {
+      const result = await scope.loadDemo();
+      if (result.accepted) closeUpload();
+      else setErrors(result.errors);
+    } catch (e) {
+      setErrors([e instanceof Error ? e.message : String(e)]);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function onKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
@@ -87,7 +106,7 @@ export function UploadPrompt() {
         e.preventDefault();
         e.stopPropagation();
         const file = e.dataTransfer.files?.[0];
-        if (file && !loading) importFile(file);
+        if (file && !loading && !busy && ready) importFile(file);
       }}
     >
       <div
@@ -115,6 +134,26 @@ export function UploadPrompt() {
           <p className="upload-note">
             SCADA, DCS, ERP or lab readings must first be entered into the workbook template — raw SCADA exports are not imported directly.
           </p>
+          {ready ? (
+            <p className="upload-note">
+              Target: <strong>{scope.facility?.code} · {scope.facility?.name}</strong>. Readings are stored as history (re-imports never duplicate;
+              changed values become new revisions) and the original file is kept privately.
+            </p>
+          ) : (
+            <div className="dataset-banner dataset-banner-warn">
+              {scope.status === "signed-out" ? (
+                <>
+                  <Link href="/signin" onClick={closeUpload}>Sign in</Link> to import — data is stored per organization and factory.
+                </>
+              ) : scope.status === "no-organization" ? (
+                <>
+                  <Link href="/onboarding" onClick={closeUpload}>Create an organization</Link> before importing.
+                </>
+              ) : (
+                "Select an authorized factory before importing."
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ margin: "18px 0 10px" }}>
@@ -124,9 +163,9 @@ export function UploadPrompt() {
             className="btn btn-primary"
             style={{ fontSize: 13, padding: "10px 24px" }}
             onClick={() => inputRef.current?.click()}
-            disabled={loading}
+            disabled={loading || busy || !ready || !scope.canImport}
           >
-            {loading ? (
+            {loading || busy ? (
               <>
                 <span className="spinner spinner-sm" aria-hidden="true" /> Reading workbook…
               </>
@@ -153,7 +192,7 @@ export function UploadPrompt() {
         </div>
 
         <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginBottom: 14 }} aria-live="polite">
-          {loading ? "Parsing sheets and running QA/QC checks…" : "or drag & drop the workbook onto this dialog"}
+          {loading || busy ? "Uploading, validating, storing readings and calculating on the server…" : "or drag & drop the workbook onto this dialog"}
         </div>
 
         {errors.length > 0 ? (
@@ -178,10 +217,14 @@ export function UploadPrompt() {
             <Icon name="edit-3" size={12} /> Fill online
           </Link>
           <span aria-hidden="true" style={{ color: "var(--border-strong)" }}>•</span>
-          <button type="button" className="upload-link" onClick={loadSample} disabled={loading}>
-            <Icon name="play" size={11} /> Load synthetic demo data
-          </button>
-          <span aria-hidden="true" style={{ color: "var(--border-strong)" }}>•</span>
+          {ready && isSynthetic ? (
+            <>
+              <button type="button" className="upload-link" onClick={() => void loadSample()} disabled={loading || busy || !scope.canImport}>
+                <Icon name="play" size={11} /> Load synthetic demo data
+              </button>
+              <span aria-hidden="true" style={{ color: "var(--border-strong)" }}>•</span>
+            </>
+          ) : null}
           <button type="button" className="upload-link" onClick={downloadBlankTemplate}>
             <Icon name="download" size={11} /> Blank template
           </button>

@@ -1,64 +1,95 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { getBrowserSupabase } from "@/integrations/supabase/client";
 import { useScope } from "@/context/ScopeContext";
-import { apiFetch } from "@/lib/apiClient";
 
-interface DevUser {
-  email: string;
-  name: string;
-}
+type Mode = "signin" | "signup" | "reset";
 
-/**
- * Development sign-in with SYNTHETIC identities. The production identity provider is not yet selected; the
- * endpoint behind this page returns 404 in production builds.
- */
+/** Email/password sign-in via Supabase Auth. Sessions are cookie-based so server route handlers can authenticate. */
 export default function SignInPage() {
   const router = useRouter();
   const { reload } = useScope();
-  const [users, setUsers] = useState<DevUser[] | null>(null);
+  const [mode, setMode] = useState<Mode>("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
 
-  useEffect(() => {
-    apiFetch<DevUser[]>("/dev/users")
-      .then(setUsers)
-      .catch(() => setError("Sign-in is not available in this deployment: no identity provider is configured yet."));
-  }, []);
-
-  async function signIn(email: string) {
-    setBusy(email);
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
     setError(null);
+    setInfo(null);
+    const supabase = getBrowserSupabase();
     try {
-      await apiFetch("/auth/dev-login", { method: "POST", json: { email } });
-      reload();
-      router.push("/overview");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (mode === "signin") {
+        const { error: err } = await supabase.auth.signInWithPassword({ email, password });
+        if (err) throw err;
+        reload();
+        router.push("/overview");
+      } else if (mode === "signup") {
+        const { data, error: err } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: new URL("/auth/callback", window.location.origin).href },
+        });
+        if (err) throw err;
+        if (data.session) {
+          reload();
+          router.push("/onboarding");
+        } else setInfo("Check your email to confirm your address, then sign in.");
+      } else {
+        const { error: err } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: new URL("/reset-password", window.location.origin).href });
+        if (err) throw err;
+        setInfo("If an account exists for this address, a password reset link has been sent.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
+  const title = mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Reset password";
   return (
     <div className="page-container">
-      <PageHeader icon="lock" title="Sign in (development)" desc="Synthetic identities for testing tenant isolation. Not available in production." />
-      <div className="dataset-banner dataset-banner-synthetic" role="note">
-        All organizations, factories and users listed here are SYNTHETIC test fixtures held in an in-memory development database.
-      </div>
-      {error ? <div className="dataset-banner dataset-banner-warn">{error}</div> : null}
-      {users ? (
-        <div className="signin-list">
-          {users.map((u) => (
-            <button key={u.email} type="button" className="btn btn-secondary signin-user" disabled={!!busy} onClick={() => signIn(u.email)}>
-              <span>{u.name}</span>
-              <small>{u.email}</small>
-            </button>
-          ))}
+      <PageHeader icon="lock" title={title} desc="Your organization's readings, calculations and files are stored privately and are only visible to authorized members." />
+      <form className="section-card auth-card" onSubmit={submit}>
+        <div className="section-card-body auth-form">
+          <label className="auth-field">
+            <span>Email</span>
+            <input className="input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          </label>
+          {mode !== "reset" ? (
+            <label className="auth-field">
+              <span>Password</span>
+              <input
+                className="input"
+                type="password"
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                required
+                minLength={mode === "signup" ? 8 : undefined}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+          ) : null}
+          {error ? <div className="dataset-banner dataset-banner-warn" role="alert">{error}</div> : null}
+          {info ? <div className="dataset-banner" role="status">{info}</div> : null}
+          <button type="submit" className="btn btn-primary" disabled={busy}>
+            {busy ? "Please wait…" : title}
+          </button>
+          <div className="auth-links">
+            {mode !== "signin" ? <button type="button" className="upload-link" onClick={() => setMode("signin")}>Sign in</button> : null}
+            {mode !== "signup" ? <button type="button" className="upload-link" onClick={() => setMode("signup")}>Create account</button> : null}
+            {mode !== "reset" ? <button type="button" className="upload-link" onClick={() => setMode("reset")}>Forgot password?</button> : null}
+          </div>
         </div>
-      ) : null}
+      </form>
     </div>
   );
 }

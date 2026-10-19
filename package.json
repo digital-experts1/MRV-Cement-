@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.1",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.118.0",
     "chart.js": "^4.4.4",
     "decimal.js": "^10.6.0",
     "jspdf": "^2.5.2",

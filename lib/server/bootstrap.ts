@@ -18,14 +18,17 @@ export async function createSyntheticDeps(): Promise<{ deps: ServerDeps; seed: S
 const globalKey = "__traceServerDeps" as const;
 type GlobalWithDeps = typeof globalThis & { [globalKey]?: Promise<ServerDeps> };
 
+/** The in-process synthetic backend runs only when explicitly enabled outside production (tests call createSyntheticDeps directly). */
+export const syntheticBackendEnabled = () => process.env.NODE_ENV !== "production" && process.env.TRACE_SYNTHETIC_BACKEND === "1";
+
 /**
- * Runtime dependencies for API routes. Development uses an ephemeral in-process PostgreSQL seeded with synthetic
- * tenants. Production has no database adapter yet (provider not selected), so tenant APIs return 503 rather than
- * falling back to anything insecure.
+ * Runtime dependencies for the legacy /api/v1 harness: an ephemeral in-process PostgreSQL seeded with SYNTHETIC tenants.
+ * Disabled unless TRACE_SYNTHETIC_BACKEND=1 (development only). The application's real persistence is Supabase
+ * (/api/mrv); there is no silent fallback from one to the other.
  */
 export function getServerDeps(): Promise<ServerDeps> {
-  if (process.env.NODE_ENV === "production") {
-    return Promise.reject(new HttpError(503, "Tenant persistence is not configured in this deployment"));
+  if (!syntheticBackendEnabled()) {
+    return Promise.reject(new HttpError(503, "The synthetic test backend is disabled. Application data is served by /api/mrv (Supabase)."));
   }
   const g = globalThis as GlobalWithDeps;
   if (!g[globalKey]) {

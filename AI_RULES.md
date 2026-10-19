@@ -10,18 +10,19 @@
 - Plain CSS design system in `styles/` (`main.css`, `components.css`, `print.css`) imported via `app/globals.css`.
 - Fonts via `next/font/google` (Inter + JetBrains Mono). Imports use the `@/` alias (project root).
 
-## Architecture (Supervisor Directive 02 — see `docs/mrv/04-target-architecture-adrs.md`)
-- Target: **server-side authoritative calculation and authorization**, **PostgreSQL** persistence, **private** evidence storage. Not yet implemented; provider not yet selected — inspect existing deployment/database configuration first. Never provision paid services, reset databases or assume no deployed data exists.
-- Until the server tier exists, the pure engine in `lib/` is the single calculation path. Keep it free of browser APIs so it can move server-side unchanged.
-- Data model design: `docs/mrv/05-proposed-data-model.md` (tenant scoping via composite FKs + RLS, immutable snapshots, verification events).
+## Persistence (Directives 04/05 — see `docs/mrv/11-supabase-persistence.md`)
+- **Supabase** (dev project `vbxvhbnhstdfbkgjuzgs`) is the persistence layer: Auth (cookie sessions, `@supabase/ssr`), PostgreSQL with RLS, private Storage bucket `mrv-private`.
+- Schema: `db/supabase/*.sql`, applied via the SQL tool in additive batches only. Inspect before changing; never reset, drop or overwrite data; never apply to production without review.
+- API: `/api/mrv/*` → `lib/server/mrv/router.ts` → `service.ts`, using the **user-scoped** client (`lib/server/supabase/auth.ts`). Never use a service-role key in app code. Writes only via permission-checking RPCs (`mrv_*`); `authenticated` has SELECT only.
+- Readings are history (`activity_reading`): corrections create revisions; runs are immutable snapshots; staleness = `run_invalidation`. Range logic: `lib/mrv/dateRanges.ts` + `rangeSelection.ts` (no prorating, no double counting).
+- Official calculations run server-side through `calculateStore`. Client: `useScope()` (workspace: org/factory/range/run, imports) and `useStore()` (displayed dataset only).
+- Legacy PGlite `/api/v1` harness runs only with `TRACE_SYNTHETIC_BACKEND=1` (dev); no silent fallback to it.
+- Real-DB check: `db/supabase/tests/rls_persistence_check.sql` (rolls back). Pure cases: `tests/mrv/cases.ts` (Vitest + dev `GET /api/dev/mrv-selftest`).
 
 ## Multi-tenancy (Directive 03 — see `docs/mrv/10-multi-tenant-foundation.md`)
-- Tenant = customer organisation; facility = factory; periods are facility-specific. Schema: `db/migrations/` (additive only, never reset).
-- All tenant data access goes through `withTenant` (`lib/server/authz/authorize.ts`) → `asUser` (transaction-local `trace_app` role + context). Never query tenant tables as owner outside migrations/seed/session issuance.
-- Every tenant-owned table: `tenant_id` + `facility_id`, composite FKs to parents, RLS policies. Browser-supplied IDs are claims only; reject unknown body keys.
-- Membership grants nothing; permissions only from `lib/tenancy/permissions.ts` role assignments. Only `approver` approves.
-- API: add routes to `lib/server/api/router.ts` only. Client: `useScope()` / `scopedFetch`; cache/draft keys via `lib/tenancy/scopeKeys.ts`.
-- Isolation suite `tests/isolation/cases.ts` must stay green (`npm test` or dev `GET /api/dev/isolation`); add cases for new persisted modules.
+- Tenant = customer organisation; facility = factory. Every tenant-owned table: `tenant_id` + `facility_id`, composite FKs to parents, RLS. Browser-supplied IDs are claims only; reject unknown body keys.
+- Membership grants nothing; permissions only from role assignments (`lib/tenancy/permissions.ts`, mirrored in `public.role_permission`). Only `approver` approves.
+- Cache/draft keys via `lib/tenancy/scopeKeys.ts`. Isolation suites (`tests/isolation/cases.ts`, SQL check above) must stay green; add cases for new persisted modules.
 
 ## Calculation & data rules (non-negotiable)
 - Workbook import, manual entry, demo and data-package re-import all go through `calculateStore` (`lib/calcEngine.ts`). Workbook totals/statuses are comparison assertions only (`lib/assertions.ts`).

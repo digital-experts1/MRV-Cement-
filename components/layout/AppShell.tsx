@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
+import { useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { ExplainerModal } from "@/components/ui/ExplainerModal";
 import { UploadPrompt } from "@/components/ui/UploadPrompt";
@@ -11,7 +12,8 @@ import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { collapsed, navOpen, closeNav, handleFile, openUpload } = useStore();
+  const { collapsed, navOpen, closeNav, openUpload, setParseError } = useStore();
+  const { importFile } = useScope();
 
   useEffect(() => {
     if (!navOpen) return;
@@ -33,9 +35,17 @@ export function AppShell({ children }: { children: ReactNode }) {
         e.preventDefault();
         const file = e.dataTransfer.files?.[0];
         if (file && /\.(xlsx|xlsm|json)$/i.test(file.name)) {
-          handleFile(file).then((errors) => {
-            if (errors.length > 0) openUpload();
-          });
+          importFile(file)
+            .then((outcome) => {
+              if (!outcome.accepted) {
+                setParseError(outcome.errors.join("\n"));
+                openUpload();
+              }
+            })
+            .catch((e) => {
+              setParseError(e instanceof Error ? e.message : String(e));
+              openUpload();
+            });
         }
       }}
     >

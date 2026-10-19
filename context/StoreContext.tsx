@@ -1,13 +1,14 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { parseDataPackage } from "@/lib/dataPackage";
-import { resolveImport } from "@/lib/importResolution";
-import { parseWorkbook } from "@/lib/parser";
 import type { Store } from "@/lib/types";
 
 const MOBILE_NAV_QUERY = "(max-width: 1024px)";
 
+/**
+ * Active dataset cache and shell UI state. The dataset itself is always a server-calculated, persisted run loaded by
+ * the workspace (ScopeContext); this context only holds what is currently displayed.
+ */
 interface StoreContextValue {
   store: Store | null;
   loading: boolean;
@@ -16,10 +17,10 @@ interface StoreContextValue {
   navOpen: boolean;
   toggleSidebar: () => void;
   closeNav: () => void;
-  /** Resolves with the import errors; an empty array means the workbook loaded successfully. */
-  handleFile: (file: File) => Promise<string[]>;
   setStoreData: (store: Store) => void;
   clearStore: () => void;
+  setLoading: (loading: boolean) => void;
+  setParseError: (error: string | null) => void;
   uploadOpen: boolean;
   openUpload: () => void;
   closeUpload: () => void;
@@ -70,62 +71,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setParseError(null);
   }, []);
 
-  const handleFile = useCallback((file: File) => {
-    setLoading(true);
-    setParseError(null);
-    return new Promise<string[]>((resolve) => {
-      const fail = (errors: string[]) => {
-        setParseError(errors.join("\n"));
-        resolve(errors);
-      };
-      const isJson = /\.json$/i.test(file.name);
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const result = e.target?.result;
-          let next: Store;
-          if (isJson && typeof result === "string") next = parseDataPackage(result, file.name);
-          else if (!isJson && result instanceof ArrayBuffer) next = parseWorkbook(result, file.name);
-          else {
-            fail(["Could not read the selected file."]);
-            return;
-          }
-          // A failed import never replaces or clears the active dataset.
-          setStore((prev) => resolveImport(prev, next).active);
-          if (next._valid) resolve([]);
-          else fail(resolveImport(null, next).errors);
-        } catch (err) {
-          fail([err instanceof Error ? err.message : "Failed to parse file"]);
-        } finally {
-          setLoading(false);
-        }
-      };
-      reader.onerror = () => {
-        setLoading(false);
-        fail(["Failed to read the selected file."]);
-      };
-      if (isJson) reader.readAsText(file);
-      else reader.readAsArrayBuffer(file);
-    });
-  }, []);
-
   const value = useMemo(
     () => ({
-      store,
-      loading,
-      parseError,
-      collapsed,
-      navOpen,
-      toggleSidebar,
-      closeNav,
-      handleFile,
-      setStoreData,
-      clearStore,
-      uploadOpen,
-      openUpload,
-      closeUpload,
+      store, loading, parseError, collapsed, navOpen, toggleSidebar, closeNav, setStoreData, clearStore, setLoading, setParseError,
+      uploadOpen, openUpload, closeUpload,
     }),
-    [store, loading, parseError, collapsed, navOpen, toggleSidebar, closeNav, handleFile, setStoreData, clearStore, uploadOpen, openUpload, closeUpload]
+    [store, loading, parseError, collapsed, navOpen, toggleSidebar, closeNav, setStoreData, clearStore, uploadOpen, openUpload, closeUpload]
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
