@@ -1,4 +1,20 @@
-import { Store, SheetRow, createEmptyStore } from "./types";
+import Decimal from "decimal.js";
+import { computeCompleteness, computeReadiness } from "./completeness";
+import { contentRevision } from "./hash";
+import { parseStrictNumber } from "./numeric";
+import { runQaChecks } from "./qaChecks";
+import {
+  createEmptyInput,
+  type DataOrigin,
+  type InputIssue,
+  type MrvInput,
+  type OverallQaStatus,
+  type RowSource,
+  type SheetRow,
+  type Store,
+} from "./types";
+
+export type Dec = Decimal | null;
 
 export interface FuelDefaultFactor {
   ncv: number;
@@ -10,6 +26,7 @@ export interface FuelDefaultFactor {
   notes: string;
 }
 
+/** Reference defaults offered in manual entry. Selecting a fuel copies these explicitly into the row; they are never applied silently. */
 export const DEFAULT_FUEL_FACTORS: Record<string, FuelDefaultFactor> = {
   Petcoke:     { ncv: 32.5,  ncvUnit: "GJ/t", ef: 97.5, efUnit: "tCO2/TJ", ox: 0.99,  biomass: 0.00, notes: "High-carbon kiln fuel" },
   Coal:        { ncv: 25.8,  ncvUnit: "GJ/t", ef: 94.6, efUnit: "tCO2/TJ", ox: 0.99,  biomass: 0.00, notes: "Fossil solid fuel" },
@@ -19,551 +36,445 @@ export const DEFAULT_FUEL_FACTORS: Record<string, FuelDefaultFactor> = {
   Diesel:      { ncv: 43.0,  ncvUnit: "GJ/t", ef: 74.1, efUnit: "tCO2/TJ", ox: 0.99,  biomass: 0.00, notes: "Startup/backup liquid fuel" },
 };
 
+export const CLINKER_EF_CONSTANT = "Selected clinker process EF";
+
+const REVIEW = "Default – review required";
 export const DEFAULT_CONSTANTS: SheetRow[] = [
-  { "Constant / Factor": "Selected clinker process EF", Value: 0.5325, Unit: "tCO2/t clinker", "Source / rationale": "IPCC default for 65% CaO in clinker", "Used in": "08_Calculations", "Change control": "Controlled", Status: "Approved", "Source URL": "https://www.ipcc-nggip.iges.or.jp/" },
-  { "Constant / Factor": "CaCO3 molar mass ratio",      Value: 0.4397, Unit: "tCO2/t CaCO3",   "Source / rationale": "Stoichiometric 44.01/100.09",       "Used in": "04_Raw_Material_Input", "Change control": "Fixed chemistry", Status: "Approved", "Source URL": "https://www.ipcc-nggip.iges.or.jp/" },
-  { "Constant / Factor": "MgCO3 molar mass ratio",      Value: 0.5220, Unit: "tCO2/t MgCO3",   "Source / rationale": "Stoichiometric 44.01/84.31",        "Used in": "04_Raw_Material_Input", "Change control": "Fixed chemistry", Status: "Approved", "Source URL": "https://www.ipcc-nggip.iges.or.jp/" },
-  { "Constant / Factor": "Grid EF Egypt Q1 2025",       Value: 0.4878, Unit: "tCO2/MWh",       "Source / rationale": "Grid emission factor published baseline", "Used in": "06_Electricity_Input", "Change control": "Annual/Controlled", Status: "Approved", "Source URL": "https://www.eeca.gov.eg/" },
-  { "Constant / Factor": "Clinker factor min QA",       Value: 0.25,   Unit: "ratio",          "Source / rationale": "CBAM lower bound for composite cement", "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
-  { "Constant / Factor": "Clinker factor max QA",       Value: 1.00,   Unit: "ratio",          "Source / rationale": "Theoretical pure clinker bound",     "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
-  { "Constant / Factor": "SEE clinker min QA",          Value: 0.50,   Unit: "tCO2/t clinker", "Source / rationale": "Plausible low-intensity clinker bound", "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
-  { "Constant / Factor": "SEE clinker max QA",          Value: 1.20,   Unit: "tCO2/t clinker", "Source / rationale": "High-intensity threshold limit",    "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
-  { "Constant / Factor": "SEE cement min QA",           Value: 0.20,   Unit: "tCO2/t cement",  "Source / rationale": "Low cement emissions bound",         "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
-  { "Constant / Factor": "SEE cement max QA",           Value: 1.20,   Unit: "tCO2/t cement",  "Source / rationale": "Upper cement emissions bound",        "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
-  { "Constant / Factor": "SHC min QA",                  Value: 2.80,   Unit: "GJ/t clinker",   "Source / rationale": "Best available technology thermal limit", "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
-  { "Constant / Factor": "SHC max QA",                  Value: 4.50,   Unit: "GJ/t clinker",   "Source / rationale": "Standard kiln thermal upper limit",  "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
-  { "Constant / Factor": "TSR min QA",                  Value: 0.00,   Unit: "%",              "Source / rationale": "Zero alternative fuel substitution", "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
-  { "Constant / Factor": "TSR max QA",                  Value: 80.00,  Unit: "%",              "Source / rationale": "High substitution limit without pre-calciner changes", "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Active", "Source URL": "" },
+  { "Constant / Factor": CLINKER_EF_CONSTANT,      Value: 0.5325, Unit: "tCO2/t clinker", "Source / rationale": "IPCC default for 65% CaO in clinker", "Used in": "08_Calculations", "Change control": "Controlled", Status: REVIEW, "Source URL": "https://www.ipcc-nggip.iges.or.jp/" },
+  { "Constant / Factor": "CaCO3 molar mass ratio", Value: 0.4397, Unit: "tCO2/t CaCO3",   "Source / rationale": "Stoichiometric 44.01/100.09",       "Used in": "04_Raw_Material_Input", "Change control": "Fixed chemistry", Status: "Fixed chemistry", "Source URL": "" },
+  { "Constant / Factor": "MgCO3 molar mass ratio", Value: 0.5220, Unit: "tCO2/t MgCO3",   "Source / rationale": "Stoichiometric 44.01/84.31",        "Used in": "04_Raw_Material_Input", "Change control": "Fixed chemistry", Status: "Fixed chemistry", "Source URL": "" },
+  { "Constant / Factor": "Grid EF Egypt Q1 2025",  Value: 0.4878, Unit: "tCO2/MWh",       "Source / rationale": "Placeholder baseline – source document not yet attached", "Used in": "06_Electricity_Input", "Change control": "Annual/Controlled", Status: REVIEW, "Source URL": "" },
+  ...([
+    ["Clinker factor min QA", 0.25, "ratio"], ["Clinker factor max QA", 1.0, "ratio"],
+    ["SEE clinker min QA", 0.5, "tCO2/t clinker"], ["SEE clinker max QA", 1.2, "tCO2/t clinker"],
+    ["SEE cement min QA", 0.2, "tCO2/t cement"], ["SEE cement max QA", 1.2, "tCO2/t cement"],
+    ["SHC min QA", 2.8, "GJ/t clinker"], ["SHC max QA", 4.5, "GJ/t clinker"],
+    ["TSR min QA", 0, "%"], ["TSR max QA", 80, "%"],
+  ] as const).map(([name, value, unit]) => ({
+    "Constant / Factor": name, Value: value, Unit: unit, "Source / rationale": "Internal plausibility bound", "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Internal QA bound", "Source URL": "",
+  })),
 ];
 
-export function toNum(v: unknown, fallback = 0): number {
-  if (v === null || v === undefined || v === "") return fallback;
-  const n = typeof v === "number" ? v : parseFloat(String(v));
-  return isNaN(n) ? fallback : n;
+const CACO3_RATIO = new Decimal("44.01").div("100.09");
+const MGCO3_RATIO = new Decimal("44.01").div("84.31");
+
+// ── Decimal helpers: any missing operand yields null (never zero). ──
+
+export function sumAll(values: Dec[]): Dec {
+  if (values.length === 0 || values.some((v) => v === null)) return null;
+  return values.reduce<Decimal>((acc, v) => acc.plus(v as Decimal), new Decimal(0));
 }
 
-export function calcProductionRow(row: SheetRow): SheetRow {
-  const clinkerProduced = toNum(row["Clinker Produced t"]);
-  const cementProduced  = toNum(row["Cement Produced t"]);
-  const clinkerUsed     = toNum(row["Clinker Used t"]);
-  const gypsum          = toNum(row["Gypsum t"]);
-  const limestone       = toNum(row["Limestone Additive t"]);
-  const other           = toNum(row["Other Additives t"]);
+function mulAll(...values: Dec[]): Dec {
+  if (values.some((v) => v === null)) return null;
+  return values.reduce<Decimal>((acc, v) => acc.mul(v as Decimal), new Decimal(1));
+}
 
-  const clinkerFactor = cementProduced > 0 ? clinkerUsed / cementProduced : null;
+function add(a: Dec, b: Dec): Dec {
+  return a === null || b === null ? null : a.plus(b);
+}
 
-  return {
-    ...row,
-    "Clinker Produced t": clinkerProduced,
-    "Cement Produced t": cementProduced,
-    "Clinker Used t": clinkerUsed,
-    "Gypsum t": gypsum,
-    "Limestone Additive t": limestone,
-    "Other Additives t": other,
-    "Clinker Factor": clinkerFactor !== null ? parseFloat(clinkerFactor.toFixed(4)) : null,
-    "QA Status": clinkerFactor !== null && clinkerFactor >= 0.25 && clinkerFactor <= 1.0 ? "PASS" : "WARN",
+function div(a: Dec, b: Dec): Dec {
+  if (a === null || b === null || b.isZero()) return null;
+  return a.div(b);
+}
+
+export function out(d: Dec): number | null {
+  return d === null ? null : d.toNumber();
+}
+
+function rowRef(row: SheetRow, idx: number): number {
+  return (row._source as RowSource | undefined)?.row ?? idx + 1;
+}
+
+function readNum(row: SheetRow, field: string, section: string, idx: number, issues: InputIssue[]): Dec {
+  const parsed = parseStrictNumber(row[field]);
+  if (parsed.kind === "ok") return parsed.value;
+  if (parsed.kind === "invalid") {
+    issues.push({ section, row: rowRef(row, idx), field, raw: row[field], reason: parsed.reason });
+  }
+  return null;
+}
+
+export interface RowCalc {
+  row: SheetRow;
+  d: Record<string, Dec>;
+  missing: string[];
+}
+
+function finishRow(row: SheetRow, d: Record<string, Dec>, required: string[], status: string): RowCalc {
+  const missing = required.filter((k) => d[k] === null);
+  const outRow: SheetRow = { ...row };
+  for (const [k, v] of Object.entries(d)) outRow[k] = out(v);
+  outRow["QA Status"] = missing.length > 0 ? "INCOMPLETE" : status;
+  outRow._missing = missing;
+  return { row: outRow, d, missing };
+}
+
+export function calcProductionRow(row: SheetRow, issues: InputIssue[] = [], idx = 0): RowCalc {
+  const S = "03_Production_Input";
+  const f = (k: string) => readNum(row, k, S, idx, issues);
+  const d: Record<string, Dec> = {
+    "Clinker Produced t": f("Clinker Produced t"),
+    "Cement Produced t": f("Cement Produced t"),
+    "Clinker Used t": f("Clinker Used t"),
+    "Gypsum t": f("Gypsum t"),
+    "Limestone Additive t": f("Limestone Additive t"),
+    "Other Additives t": f("Other Additives t"),
   };
+  d["Clinker Factor"] = div(d["Clinker Used t"], d["Cement Produced t"]);
+  const cf = d["Clinker Factor"];
+  const status = cf !== null && cf.gte(0.25) && cf.lte(1) ? "PASS" : "WARNING";
+  return finishRow(row, d, ["Clinker Produced t", "Cement Produced t", "Clinker Used t"], status);
 }
 
-export function calcRawMaterialRow(row: SheetRow): SheetRow {
-  const qty   = toNum(row["Quantity t"]);
-  const caco3 = toNum(row["CaCO3 %"]);
-  const mgco3 = toNum(row["MgCO3 %"]);
-  const moist = toNum(row["Moisture %"]);
-  const conv  = toNum(row["Calcination Conversion"], 1.0);
-
-  const caco3CO2 = qty * (caco3 / 100) * (44.01 / 100.09) * conv;
-  const mgco3CO2 = qty * (mgco3 / 100) * (44.01 / 84.31) * conv;
-  const methodACO2 = caco3CO2 + mgco3CO2;
-
-  return {
-    ...row,
-    "Quantity t": qty,
-    "CaCO3 %": caco3,
-    "MgCO3 %": mgco3,
-    "Moisture %": moist,
-    "Calcination Conversion": conv,
-    "CaCO3 CO2 t": parseFloat(caco3CO2.toFixed(2)),
-    "MgCO3 CO2 t": parseFloat(mgco3CO2.toFixed(2)),
-    "Process CO2 Method A t": parseFloat(methodACO2.toFixed(2)),
-    "QA Status": qty > 0 && methodACO2 > 0 ? "PASS" : "WARN",
+export function calcRawMaterialRow(row: SheetRow, issues: InputIssue[] = [], idx = 0): RowCalc {
+  const S = "04_Raw_Material_Input";
+  const f = (k: string) => readNum(row, k, S, idx, issues);
+  const d: Record<string, Dec> = {
+    "Quantity t": f("Quantity t"),
+    "CaCO3 %": f("CaCO3 %"),
+    "MgCO3 %": f("MgCO3 %"),
+    "Moisture %": f("Moisture %"),
+    "Calcination Conversion": f("Calcination Conversion"),
   };
+  const pct = (v: Dec) => (v === null ? null : v.div(100));
+  d["CaCO3 CO2 t"] = mulAll(d["Quantity t"], pct(d["CaCO3 %"]), CACO3_RATIO, d["Calcination Conversion"]);
+  d["MgCO3 CO2 t"] = mulAll(d["Quantity t"], pct(d["MgCO3 %"]), MGCO3_RATIO, d["Calcination Conversion"]);
+  d["Process CO2 Method A t"] = add(d["CaCO3 CO2 t"], d["MgCO3 CO2 t"]);
+  const co2 = d["Process CO2 Method A t"];
+  const status = co2 !== null && co2.gt(0) ? "PASS" : "WARNING";
+  return finishRow(row, d, ["Quantity t", "CaCO3 %", "MgCO3 %", "Calcination Conversion"], status);
 }
 
-export function calcFuelRow(row: SheetRow): SheetRow {
-  const qty     = toNum(row["Quantity"]);
-  const ncv     = toNum(row["NCV GJ/unit"]);
-  const ef      = toNum(row["EF tCO2/TJ"]);
-  const ox      = toNum(row["Oxidation Factor"], 1.0);
-  const biomass = toNum(row["Biomass Fraction"], 0.0);
-  const fossil  = Math.max(0, 1.0 - biomass);
+export function isAlternativeFuel(fuelType: unknown, biomass: Dec): boolean {
+  const type = String(fuelType ?? "").toLowerCase();
+  return type.includes("rdf") || type.includes("tyre") || type.includes("biomass") || (biomass !== null && biomass.gt(0));
+}
 
-  const energyGJ = qty * ncv;
-  const energyTJ = energyGJ / 1000.0;
-  const fossilCO2 = energyTJ * ef * ox * fossil;
-  const biogenicCO2 = energyTJ * ef * ox * biomass;
-
-  return {
-    ...row,
-    Quantity: qty,
-    "NCV GJ/unit": ncv,
-    "EF tCO2/TJ": ef,
-    "Oxidation Factor": ox,
-    "Biomass Fraction": biomass,
-    "Fossil Fraction": parseFloat(fossil.toFixed(4)),
-    "Energy GJ": parseFloat(energyGJ.toFixed(2)),
-    "Energy TJ": parseFloat(energyTJ.toFixed(4)),
-    "Fossil CO2 t": parseFloat(fossilCO2.toFixed(4)),
-    "Biogenic CO2 Memo t": parseFloat(biogenicCO2.toFixed(4)),
-    "QA Status": qty > 0 && ncv > 0 && ef > 0 ? "PASS" : "WARN",
+export function calcFuelRow(row: SheetRow, issues: InputIssue[] = [], idx = 0): RowCalc {
+  const S = "05_Kiln_Fuel_Input";
+  const f = (k: string) => readNum(row, k, S, idx, issues);
+  const d: Record<string, Dec> = {
+    Quantity: f("Quantity"),
+    "NCV GJ/unit": f("NCV GJ/unit"),
+    "EF tCO2/TJ": f("EF tCO2/TJ"),
+    "Oxidation Factor": f("Oxidation Factor"),
+    "Biomass Fraction": f("Biomass Fraction"),
   };
+  const bio = d["Biomass Fraction"];
+  d["Fossil Fraction"] = bio === null ? null : Decimal.max(0, new Decimal(1).minus(bio));
+  d["Energy GJ"] = mulAll(d.Quantity, d["NCV GJ/unit"]);
+  d["Energy TJ"] = div(d["Energy GJ"], new Decimal(1000));
+  const base = mulAll(d["Energy TJ"], d["EF tCO2/TJ"], d["Oxidation Factor"]);
+  d["Fossil CO2 t"] = mulAll(base, d["Fossil Fraction"]);
+  d["Biogenic CO2 Memo t"] = mulAll(base, bio);
+  const ok = [d.Quantity, d["NCV GJ/unit"], d["EF tCO2/TJ"]].every((v) => v !== null && v.gt(0));
+  return finishRow(row, d, ["Quantity", "NCV GJ/unit", "EF tCO2/TJ", "Oxidation Factor", "Biomass Fraction"], ok ? "PASS" : "WARNING");
 }
 
-export function calcElectricityRow(row: SheetRow): SheetRow {
-  const gridMWh  = toNum(row["Grid MWh"]);
-  const gridEF   = toNum(row["Grid EF tCO2/MWh"], 0.4878);
-  const selfMWh  = toNum(row["Self-generation MWh"]);
-  const selfEF   = toNum(row["Self-generation EF"], 0);
-  const renewMWh = toNum(row["Renewable MWh"]);
-
-  const gridCO2    = gridMWh * gridEF;
-  const selfGenCO2 = selfMWh * selfEF;
-
-  return {
-    ...row,
-    "Grid MWh": gridMWh,
-    "Grid EF tCO2/MWh": gridEF,
-    "Grid CO2 t": parseFloat(gridCO2.toFixed(2)),
-    "Self-generation MWh": selfMWh,
-    "Self-generation EF": selfEF,
-    "Self-generation CO2 t": parseFloat(selfGenCO2.toFixed(2)),
-    "Renewable MWh": renewMWh,
-    "QA Status": gridMWh > 0 && gridEF > 0 ? "PASS" : "WARN",
+export function calcElectricityRow(row: SheetRow, issues: InputIssue[] = [], idx = 0): RowCalc {
+  const S = "06_Electricity_Input";
+  const f = (k: string) => readNum(row, k, S, idx, issues);
+  const d: Record<string, Dec> = {
+    "Grid MWh": f("Grid MWh"),
+    "Grid EF tCO2/MWh": f("Grid EF tCO2/MWh"),
+    "Self-generation MWh": f("Self-generation MWh"),
+    "Self-generation EF": f("Self-generation EF"),
+    "Renewable MWh": f("Renewable MWh"),
   };
+  d["Grid CO2 t"] = mulAll(d["Grid MWh"], d["Grid EF tCO2/MWh"]);
+  d["Self-generation CO2 t"] = mulAll(d["Self-generation MWh"], d["Self-generation EF"]);
+  const ok = [d["Grid MWh"], d["Grid EF tCO2/MWh"]].every((v) => v !== null && v.gt(0));
+  return finishRow(row, d, ["Grid MWh", "Grid EF tCO2/MWh"], ok ? "PASS" : "WARNING");
 }
 
-export function calculateStore(input: any): Store {
-  const s: Store = {
+export function calcInventoryRow(row: SheetRow, issues: InputIssue[] = [], idx = 0): RowCalc {
+  const S = "14_Inventory_Movements";
+  const f = (k: string) => readNum(row, k, S, idx, issues);
+  const d: Record<string, Dec> = {
+    "Opening Stock t": f("Opening Stock t"),
+    "Purchased t": f("Purchased t"),
+    "Dispatched t": f("Dispatched t"),
+    "Closing Stock t": f("Closing Stock t"),
+  };
+  return finishRow(row, d, ["Opening Stock t", "Purchased t", "Dispatched t", "Closing Stock t"], "RECORDED");
+}
+
+type InputLike = Partial<Omit<MrvInput, "meta">> & { meta?: Partial<MrvInput["meta"]> };
+
+/** Fills defaults and deep-copies so the store keeps an immutable snapshot of the exact inputs used. */
+export function normalizeInput(input: InputLike, fallbackOrigin: DataOrigin = "manual"): MrvInput {
+  const base = createEmptyInput(input.meta?.origin ?? fallbackOrigin);
+  const copy = structuredClone({ ...input, meta: undefined }) as Partial<MrvInput>;
+  return {
+    ...base,
+    ...copy,
     meta: {
-      filename: input.meta?.filename || `Online_Entry_${input.setup?.["Reporting quarter"] || "Q1"}.xlsx`,
-      uploadedAt: input.meta?.uploadedAt || new Date().toISOString(),
+      origin: input.meta?.origin ?? fallbackOrigin,
+      synthetic: Boolean(input.meta?.synthetic),
+      filename: input.meta?.filename ?? null,
+      importedAt: input.meta?.importedAt ?? null,
     },
-    readme: input.readme || [],
-    setup: { ...input.setup },
-    setupRows: input.setupRows || [],
-    dcsMap: input.dcsMap || [],
-    production: [],
-    rawMaterial: [],
-    kilnFuel: [],
-    electricity: [],
-    constants: input.constants && input.constants.length ? input.constants : [...DEFAULT_CONSTANTS],
-    fuelDefaults: input.fuelDefaults || [],
-    calculations: {},
-    calcRows: [],
-    qaqc: [],
-    reportOutputs: [],
-    evidence: input.evidence || [],
-    regulatory: input.regulatory || [],
+    setup: { ...(copy.setup ?? {}) },
+  };
+}
+
+function setupText(setup: Record<string, unknown>, key: string): string | null {
+  const v = setup[key];
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s === "" ? null : s;
+}
+
+export function selectedMethod(setup: Record<string, unknown>): "A" | "B" | null {
+  const m = setupText(setup, "Selected calcination method") ?? "";
+  if (m.includes("Method A")) return "A";
+  if (m.includes("Method B")) return "B";
+  return null;
+}
+
+export interface Aggregates {
+  clinkerProduced: Dec;
+  cementProduced: Dec;
+  clinkerUsed: Dec;
+  clinkerFactor: Dec;
+  processCO2MethodA: Dec;
+  clinkerProcessEF: Dec;
+  processCO2MethodB: Dec;
+  selectedProcessCO2: Dec;
+  fuelCombustionCO2: Dec;
+  biogenicCO2Memo: Dec;
+  totalFuelEnergyGJ: Dec;
+  altFuelEnergyGJ: Dec;
+  shc: Dec;
+  tsr: Dec;
+  directEmbeddedCO2: Dec;
+  gridMWh: Dec;
+  indirectGridCO2: Dec;
+  totalEmbeddedCO2: Dec;
+  seeClinker: Dec;
+  seeCement: Dec;
+  clinkerStockpileDelta: Dec;
+}
+
+export interface EngineContext {
+  input: MrvInput;
+  production: RowCalc[];
+  rawMaterial: RowCalc[];
+  kilnFuel: RowCalc[];
+  electricity: RowCalc[];
+  inventory: RowCalc[];
+  agg: Aggregates;
+  method: "A" | "B" | null;
+}
+
+function aggregate(input: MrvInput, production: RowCalc[], rawMaterial: RowCalc[], kilnFuel: RowCalc[], electricity: RowCalc[], issues: InputIssue[]): Aggregates {
+  const col = (rows: RowCalc[], k: string) => sumAll(rows.map((r) => r.d[k]));
+  const clinkerProduced = col(production, "Clinker Produced t");
+  const cementProduced = col(production, "Cement Produced t");
+  const clinkerUsed = col(production, "Clinker Used t");
+  const processCO2MethodA = col(rawMaterial, "Process CO2 Method A t");
+
+  const efIdx = input.constants.findIndex((r) => r["Constant / Factor"] === CLINKER_EF_CONSTANT);
+  const clinkerProcessEF = efIdx >= 0 ? readNum(input.constants[efIdx], "Value", "07_Constants_EF_NCV", efIdx, issues) : null;
+  const processCO2MethodB = mulAll(clinkerProduced, clinkerProcessEF);
+
+  const method = selectedMethod(input.setup);
+  const selectedProcessCO2 = method === "A" ? processCO2MethodA : method === "B" ? processCO2MethodB : null;
+
+  const fuelCombustionCO2 = col(kilnFuel, "Fossil CO2 t");
+  const biogenicCO2Memo = col(kilnFuel, "Biogenic CO2 Memo t");
+  const totalFuelEnergyGJ = col(kilnFuel, "Energy GJ");
+  const altFuelEnergyGJ =
+    totalFuelEnergyGJ === null
+      ? null
+      : sumAll(kilnFuel.map((r) => (isAlternativeFuel(r.row["Fuel Type"], r.d["Biomass Fraction"]) ? r.d["Energy GJ"] : new Decimal(0))));
+
+  const directEmbeddedCO2 = add(selectedProcessCO2, fuelCombustionCO2);
+  const gridMWh = col(electricity, "Grid MWh");
+  const indirectGridCO2 = col(electricity, "Grid CO2 t");
+  const totalEmbeddedCO2 = add(directEmbeddedCO2, indirectGridCO2);
+
+  return {
+    clinkerProduced,
+    cementProduced,
+    clinkerUsed,
+    clinkerFactor: div(clinkerUsed, cementProduced),
+    processCO2MethodA,
+    clinkerProcessEF,
+    processCO2MethodB,
+    selectedProcessCO2,
+    fuelCombustionCO2,
+    biogenicCO2Memo,
+    totalFuelEnergyGJ,
+    altFuelEnergyGJ,
+    shc: div(totalFuelEnergyGJ, clinkerProduced),
+    tsr: mulAll(div(altFuelEnergyGJ, totalFuelEnergyGJ), new Decimal(100)),
+    directEmbeddedCO2,
+    gridMWh,
+    indirectGridCO2,
+    totalEmbeddedCO2,
+    seeClinker: div(directEmbeddedCO2, clinkerProduced),
+    seeCement: div(totalEmbeddedCO2, cementProduced),
+    clinkerStockpileDelta: clinkerProduced === null || clinkerUsed === null ? null : clinkerProduced.minus(clinkerUsed),
+  };
+}
+
+function evidenceStatus(input: MrvInput): string {
+  if (input.evidence.length === 0) return "Missing";
+  return input.evidence.every((r) => r.Status === "Mapped") ? "Mapped (not externally verified)" : "Partial";
+}
+
+function overallStatus(statuses: string[]): OverallQaStatus {
+  if (statuses.includes("FAIL")) return "FAIL";
+  if (statuses.includes("NOT_EVALUATED")) return "INCOMPLETE";
+  if (statuses.includes("WARNING")) return "WARNING";
+  return "PASS";
+}
+
+/**
+ * The single authoritative calculation path. Workbook imports, manual entry, demo data and data-package
+ * re-imports all pass their raw inputs here. Workbook totals/statuses are never read by this function.
+ */
+export function calculateStore(inputLike: InputLike, fallbackOrigin: DataOrigin = "manual"): Store {
+  const input = normalizeInput(inputLike, fallbackOrigin);
+  const issues: InputIssue[] = [];
+
+  const production = input.production.map((r, i) => calcProductionRow(r, issues, i));
+  const rawMaterial = input.rawMaterial.map((r, i) => calcRawMaterialRow(r, issues, i));
+  const kilnFuel = input.kilnFuel.map((r, i) => calcFuelRow(r, issues, i));
+  const electricity = input.electricity.map((r, i) => calcElectricityRow(r, issues, i));
+  const inventory = input.inventory.map((r, i) => calcInventoryRow(r, issues, i));
+  const agg = aggregate(input, production, rawMaterial, kilnFuel, electricity, issues);
+  const method = selectedMethod(input.setup);
+  const ctx: EngineContext = { input, production, rawMaterial, kilnFuel, electricity, inventory, agg, method };
+
+  const v = (d: Dec) => out(d);
+  const evStatus = evidenceStatus(input);
+  const methodLabel = setupText(input.setup, "Selected calcination method");
+
+  const calcRows: SheetRow[] = [
+    { Metric: "Clinker Produced", "Formula / Link": "Σ 03_Production_Input[Clinker Produced t]", Value: v(agg.clinkerProduced), Unit: "t", "Governance note": "Selected period production total", "QA Source": "Production_Input" },
+    { Metric: "Cement Produced", "Formula / Link": "Σ 03_Production_Input[Cement Produced t]", Value: v(agg.cementProduced), Unit: "t", "Governance note": "Selected period cement output", "QA Source": "Production_Input" },
+    { Metric: "Clinker Used in Cement", "Formula / Link": "Σ 03_Production_Input[Clinker Used t]", Value: v(agg.clinkerUsed), Unit: "t", "Governance note": "Used for clinker factor", "QA Source": "Production_Input" },
+    { Metric: "Clinker Factor", "Formula / Link": "Clinker Used ÷ Cement Produced", Value: v(agg.clinkerFactor), Unit: "ratio", "Governance note": "Clinker content divided by cement production", "QA Source": "Production_Input" },
+    { Metric: "Process CO2 Method A", "Formula / Link": "Σ Qty × (CaCO3% × 44.01/100.09 + MgCO3% × 44.01/84.31) × conversion", Value: v(agg.processCO2MethodA), Unit: "tCO2", "Governance note": "Input-based carbonate pathway", "QA Source": "Raw_Material_Input" },
+    { Metric: "Process CO2 Method B", "Formula / Link": `Clinker Produced × ${CLINKER_EF_CONSTANT}`, Value: v(agg.processCO2MethodB), Unit: "tCO2", "Governance note": "Output-based clinker pathway", "QA Source": "Constants" },
+    { Metric: "Selected Process CO2", "Formula / Link": "Method selected in Setup (no default)", Value: v(agg.selectedProcessCO2), Unit: "tCO2", "Governance note": `Method: ${methodLabel ?? "not selected"}`, "QA Source": "Setup" },
+    { Metric: "Fuel Combustion CO2", "Formula / Link": "Σ Energy TJ × EF × Ox × (1 − biomass)", Value: v(agg.fuelCombustionCO2), Unit: "tCO2", "Governance note": "Fossil combustion only", "QA Source": "Kiln_Fuel_Input" },
+    { Metric: "Biogenic CO2 Memo", "Formula / Link": "Σ Energy TJ × EF × Ox × biomass", Value: v(agg.biogenicCO2Memo), Unit: "tCO2", "Governance note": "Reported separately; not counted in fossil direct CO2", "QA Source": "Kiln_Fuel_Input" },
+    { Metric: "Direct Embedded CO2", "Formula / Link": "Selected Process CO2 + Fuel Combustion CO2", Value: v(agg.directEmbeddedCO2), Unit: "tCO2", "Governance note": "Process + fossil fuel combustion", "QA Source": "Calculations" },
+    { Metric: "Grid Electricity MWh", "Formula / Link": "Σ 06_Electricity_Input[Grid MWh]", Value: v(agg.gridMWh), Unit: "MWh", "Governance note": "Purchased grid electricity", "QA Source": "Electricity_Input" },
+    { Metric: "Indirect Grid CO2", "Formula / Link": "Σ Grid MWh × Grid EF", Value: v(agg.indirectGridCO2), Unit: "tCO2", "Governance note": "Grid electricity × grid EF", "QA Source": "Electricity_Input" },
+    { Metric: "Total Embedded CO2", "Formula / Link": "Direct Embedded CO2 + Indirect Grid CO2", Value: v(agg.totalEmbeddedCO2), Unit: "tCO2", "Governance note": "Direct + indirect grid CO2", "QA Source": "Calculations" },
+    { Metric: "SEE Clinker", "Formula / Link": "Direct Embedded CO2 ÷ Clinker Produced", Value: v(agg.seeClinker), Unit: "tCO2/t clinker", "Governance note": "Direct embedded emissions per tonne clinker", "QA Source": "Calculations" },
+    { Metric: "Specific Embedded Emissions Cement", "Formula / Link": "Total Embedded CO2 ÷ Cement Produced", Value: v(agg.seeCement), Unit: "tCO2/t cement", "Governance note": "Final cement product intensity", "QA Source": "Calculations" },
+    { Metric: "Specific Heat Consumption", "Formula / Link": "Total Fuel Energy GJ ÷ Clinker Produced", Value: v(agg.shc), Unit: "GJ/t clinker", "Governance note": "Fuel energy per tonne clinker", "QA Source": "Kiln_Fuel_Input" },
+    { Metric: "Evidence Status", "Formula / Link": "Evidence register mapping status", Value: evStatus, Unit: "status", "Governance note": "Mapping only — not external verification", "QA Source": "Evidence_Register" },
+    { Metric: "Clinker Stockpile Delta", "Formula / Link": "Clinker Produced − Clinker Used", Value: v(agg.clinkerStockpileDelta), Unit: "t", "Governance note": "Reconciled only when inventory movements are supplied (MB-04)", "QA Source": "Production_Input" },
+    { Metric: "Total Fuel Energy", "Formula / Link": "Σ Quantity × NCV", Value: v(agg.totalFuelEnergyGJ), Unit: "GJ", "Governance note": "Sum of all fuel thermal energy", "QA Source": "Kiln_Fuel_Input" },
+    { Metric: "Alt Fuel Energy", "Formula / Link": "Σ energy of alternative & biomass fuels", Value: v(agg.altFuelEnergyGJ), Unit: "GJ", "Governance note": "RDF + Tyre Chips + Biomass energy", "QA Source": "Kiln_Fuel_Input" },
+    { Metric: "Thermal Substitution Rate (TSR)", "Formula / Link": "Alt Fuel Energy ÷ Total Fuel Energy × 100", Value: v(agg.tsr), Unit: "%", "Governance note": "Alt fuel energy as % of total fuel energy", "QA Source": "Calculations" },
+  ];
+
+  const qaqc = runQaChecks(ctx);
+  const overallQA = overallStatus(qaqc.map((r) => String(r.Status)));
+  const passCount = qaqc.filter((r) => r.Status === "PASS").length;
+  const qaPassPct = qaqc.length > 0 ? Math.floor((passCount / qaqc.length) * 100) : 0;
+  calcRows.push({ Metric: "QA/QC Overall Status", "Formula / Link": "FAIL > INCOMPLETE (not evaluated) > WARNING > PASS", Value: overallQA, Unit: "status", "Governance note": "Computed by the platform; workbook statuses are comparison-only", "QA Source": "QAQC_Checks" });
+
+  const completeness = computeCompleteness(input);
+  const readiness = computeReadiness({ completeness, issues, qaqc, synthetic: input.meta.synthetic });
+
+  const calculations: Record<string, SheetRow> = {};
+  calcRows.forEach((r) => {
+    calculations[String(r.Metric)] = r;
+  });
+
+  const s = setupText;
+  const reportOutputs: SheetRow[] = [
+    { "Output Field": "Quarter", Value: s(input.setup, "Reporting quarter"), Unit: null, Source: "Setup", "Report Label": "Reporting period", "Governance Position": "Selected-period lock" },
+    { "Output Field": "Period Start", Value: s(input.setup, "Period start"), Unit: "date", Source: "Setup", "Report Label": "Period start", "Governance Position": "Selected-period lock" },
+    { "Output Field": "Period End", Value: s(input.setup, "Period end"), Unit: "date", Source: "Setup", "Report Label": "Period end", "Governance Position": "Selected-period lock" },
+    { "Output Field": "Product", Value: s(input.setup, "Primary product"), Unit: null, Source: "Setup", "Report Label": "Product selected", "Governance Position": "Product boundary" },
+    { "Output Field": "Clinker Production", Value: v(agg.clinkerProduced), Unit: "t", Source: "Calculations", "Report Label": "Clinker production", "Governance Position": "Production boundary" },
+    { "Output Field": "Cement Production", Value: v(agg.cementProduced), Unit: "t", Source: "Calculations", "Report Label": "Cement production", "Governance Position": "Product boundary" },
+    { "Output Field": "Clinker Factor", Value: v(agg.clinkerFactor), Unit: "ratio", Source: "Calculations", "Report Label": "Clinker factor", "Governance Position": "Product allocation" },
+    { "Output Field": "Process CO2", Value: v(agg.selectedProcessCO2), Unit: "tCO2", Source: "Calculations", "Report Label": "Process CO2", "Governance Position": "Direct embedded emissions" },
+    { "Output Field": "Fuel Combustion CO2", Value: v(agg.fuelCombustionCO2), Unit: "tCO2", Source: "Calculations", "Report Label": "Fuel combustion CO2", "Governance Position": "Direct embedded emissions" },
+    { "Output Field": "Biogenic CO2 Memo", Value: v(agg.biogenicCO2Memo), Unit: "tCO2", Source: "Calculations", "Report Label": "Biogenic CO2 memo", "Governance Position": "Reported separately; not counted" },
+    { "Output Field": "Direct Embedded CO2", Value: v(agg.directEmbeddedCO2), Unit: "tCO2", Source: "Calculations", "Report Label": "Direct embedded CO2", "Governance Position": "Process + fossil combustion" },
+    { "Output Field": "Grid Electricity MWh", Value: v(agg.gridMWh), Unit: "MWh", Source: "Calculations", "Report Label": "Purchased grid electricity", "Governance Position": "Indirect activity data" },
+    { "Output Field": "Indirect Grid CO2", Value: v(agg.indirectGridCO2), Unit: "tCO2", Source: "Calculations", "Report Label": "Indirect grid CO2", "Governance Position": "Purchased electricity" },
+    { "Output Field": "Total Embedded CO2", Value: v(agg.totalEmbeddedCO2), Unit: "tCO2", Source: "Calculations", "Report Label": "Total embedded CO2", "Governance Position": "Direct + indirect grid" },
+    { "Output Field": "SEE Clinker", Value: v(agg.seeClinker), Unit: "tCO2/t clinker", Source: "Calculations", "Report Label": "SEE clinker", "Governance Position": "Clinker product intensity" },
+    { "Output Field": "Specific Embedded Emissions Cement", Value: v(agg.seeCement), Unit: "tCO2/t cement", Source: "Calculations", "Report Label": "Specific embedded emissions", "Governance Position": "Final cement product intensity" },
+    { "Output Field": "QA/QC Overall Status", Value: overallQA, Unit: "status", Source: "QAQC_Checks", "Report Label": "QA/QC status", "Governance Position": "Internal QA only" },
+    { "Output Field": "Required Data Completeness", Value: completeness.pct, Unit: "%", Source: "Completeness", "Report Label": "Required data completeness", "Governance Position": "Separate from QA pass rate" },
+    { "Output Field": "Readiness", Value: readiness.status, Unit: "status", Source: "Readiness", "Report Label": "Internal review readiness", "Governance Position": "Not external verification" },
+    { "Output Field": "Evidence Status", Value: evStatus, Unit: "status", Source: "Evidence_Register", "Report Label": "Evidence mapping status", "Governance Position": "Mapping only — not external verification" },
+    { "Output Field": "Specific Heat Consumption", Value: v(agg.shc), Unit: "GJ/t clinker", Source: "Calculations", "Report Label": "Specific heat consumption", "Governance Position": "Kiln thermal efficiency" },
+    { "Output Field": "Thermal Substitution Rate", Value: v(agg.tsr), Unit: "%", Source: "Calculations", "Report Label": "TSR", "Governance Position": "Alt fuel energy share" },
+  ];
+  reportOutputs.forEach((r) => {
+    r.outputField = r["Output Field"];
+  });
+
+  const total = agg.totalEmbeddedCO2;
+  const components: [string, Dec][] = [
+    ["Process CO2", agg.selectedProcessCO2],
+    ["Fuel Combustion CO2", agg.fuelCombustionCO2],
+    ["Indirect Grid CO2", agg.indirectGridCO2],
+  ];
+  const co2Breakdown =
+    total !== null && total.gt(0)
+      ? components.map(([component, t]) => ({ component, tCO2: (t as Decimal).toNumber(), share: (t as Decimal).div(total).toNumber() }))
+      : [];
+
+  const { meta: _meta, ...dataOnly } = input;
+  void _meta;
+
+  return {
+    meta: {
+      filename: input.meta.filename ?? (input.meta.origin === "manual" ? "Online entry" : null),
+      uploadedAt: input.meta.importedAt ?? new Date().toISOString(),
+      origin: input.meta.origin,
+      synthetic: input.meta.synthetic,
+      revision: contentRevision({ ...dataOnly, synthetic: input.meta.synthetic }),
+    },
+    readme: input.readme,
+    setup: input.setup,
+    setupRows: input.setupRows,
+    dcsMap: input.dcsMap,
+    production: production.map((r) => r.row),
+    rawMaterial: rawMaterial.map((r) => r.row),
+    kilnFuel: kilnFuel.map((r) => r.row),
+    electricity: electricity.map((r) => r.row),
+    inventory: inventory.map((r) => r.row),
+    constants: input.constants,
+    fuelDefaults: input.fuelDefaults,
+    calculations,
+    calcRows,
+    qaqc,
+    reportOutputs,
+    evidence: input.evidence.map((r) => ({ ...r, evidenceId: r["Evidence ID"] })),
+    regulatory: input.regulatory,
     dashboard: {
-      co2Breakdown: [],
-      kpis: {},
+      co2Breakdown,
+      kpis: {
+        "Direct Embedded CO2": { value: v(agg.directEmbeddedCO2), unit: "tCO2", govPos: null },
+        "Total Embedded CO2": { value: v(agg.totalEmbeddedCO2), unit: "tCO2", govPos: null },
+        "SEE Cement": { value: v(agg.seeCement), unit: "tCO2/t cement", govPos: null },
+      },
     },
+    inputs: input,
+    inputIssues: issues,
+    assertions: [],
+    completeness,
+    readiness,
+    qaPassPct,
     _valid: true,
     _errors: [],
-  };
-
-  s.production = (input.production || []).map(calcProductionRow);
-  s.rawMaterial = (input.rawMaterial || []).map(calcRawMaterialRow);
-  s.kilnFuel = (input.kilnFuel || []).map(calcFuelRow);
-  s.electricity = (input.electricity || []).map(calcElectricityRow);
-
-  const clinkerProduced = s.production.reduce((acc, r) => acc + toNum(r["Clinker Produced t"]), 0);
-  const cementProduced  = s.production.reduce((acc, r) => acc + toNum(r["Cement Produced t"]), 0);
-  const clinkerUsed     = s.production.reduce((acc, r) => acc + toNum(r["Clinker Used t"]), 0);
-  const clinkerFactor   = cementProduced > 0 ? clinkerUsed / cementProduced : 0;
-
-  const processCO2MethodA = s.rawMaterial.reduce((acc, r) => acc + toNum(r["Process CO2 Method A t"]), 0);
-
-  const constClinkerEFRow = s.constants.find((r) => r["Constant / Factor"] === "Selected clinker process EF");
-  const clinkerProcessEF = constClinkerEFRow ? toNum(constClinkerEFRow.Value, 0.5325) : 0.5325;
-  const processCO2MethodB = clinkerProduced * clinkerProcessEF;
-
-  const selectedMethod = s.setup["Selected calcination method"] || "Method B - clinker output";
-  const isMethodA = String(selectedMethod).includes("Method A");
-  const selectedProcessCO2 = isMethodA ? processCO2MethodA : processCO2MethodB;
-
-  const fuelCombustionCO2 = s.kilnFuel.reduce((acc, r) => acc + toNum(r["Fossil CO2 t"]), 0);
-  const biogenicCO2Memo   = s.kilnFuel.reduce((acc, r) => acc + toNum(r["Biogenic CO2 Memo t"]), 0);
-  const totalFuelEnergyGJ = s.kilnFuel.reduce((acc, r) => acc + toNum(r["Energy GJ"]), 0);
-
-  const altFuelEnergyGJ = s.kilnFuel.reduce((acc, r) => {
-    const type = String(r["Fuel Type"] || "").toLowerCase();
-    const isAlt = type.includes("rdf") || type.includes("tyre") || type.includes("biomass") || toNum(r["Biomass Fraction"]) > 0;
-    return acc + (isAlt ? toNum(r["Energy GJ"]) : 0);
-  }, 0);
-
-  const shc = clinkerProduced > 0 ? totalFuelEnergyGJ / clinkerProduced : 0;
-  const tsr = totalFuelEnergyGJ > 0 ? (altFuelEnergyGJ / totalFuelEnergyGJ) * 100 : 0;
-
-  const directEmbeddedCO2 = selectedProcessCO2 + fuelCombustionCO2;
-  const gridMWh        = s.electricity.reduce((acc, r) => acc + toNum(r["Grid MWh"]), 0);
-  const indirectGridCO2 = s.electricity.reduce((acc, r) => acc + toNum(r["Grid CO2 t"]), 0);
-  const totalEmbeddedCO2 = directEmbeddedCO2 + indirectGridCO2;
-
-  const seeClinker = clinkerProduced > 0 ? directEmbeddedCO2 / clinkerProduced : 0;
-  const seeCement  = cementProduced > 0 ? totalEmbeddedCO2 / cementProduced : 0;
-  const clinkerStockpileDelta = clinkerProduced - clinkerUsed;
-
-  const evidenceMapped = s.evidence.length > 0 && s.evidence.every((r) => r.Status === "Mapped");
-  const evidenceStatusText = evidenceMapped ? "Ready" : s.evidence.length > 0 ? "Partial" : "Missing";
-
-  const calcList: SheetRow[] = [
-    { Metric: "Clinker Produced",                 Formula: "=SUM('03_Production_Input'!E4:E6)", Value: clinkerProduced, Unit: "t", "Governance note": "Selected period production total", "QA Source": "Production_Input" },
-    { Metric: "Cement Produced",                  Formula: "=SUM('03_Production_Input'!F4:F6)", Value: cementProduced,  Unit: "t", "Governance note": "Selected period cement output",     "QA Source": "Production_Input" },
-    { Metric: "Clinker Used in Cement",           Formula: "=SUM('03_Production_Input'!G4:G6)", Value: clinkerUsed,     Unit: "t", "Governance note": "Used for clinker factor",           "QA Source": "Production_Input" },
-    { Metric: "Clinker Factor",                   Formula: "=C6/C5",                             Value: parseFloat(clinkerFactor.toFixed(4)), Unit: "ratio", "Governance note": "Clinker content divided by cement production", "QA Source": "Production_Input" },
-    { Metric: "Process CO2 Method A",             Formula: "=SUM('04_Raw_Material_Input'!J4:J6)",Value: parseFloat(processCO2MethodA.toFixed(2)), Unit: "tCO2", "Governance note": "Input-based carbonate pathway", "QA Source": "Raw_Material_Input" },
-    { Metric: "Process CO2 Method B",             Formula: "=C4*Constants[Selected clinker process EF]", Value: parseFloat(processCO2MethodB.toFixed(2)), Unit: "tCO2", "Governance note": "Output-based clinker pathway selected in demo", "QA Source": "Constants" },
-    { Metric: "Selected Process CO2",             Formula: "=IF(Setup method = Method A, Method A, Method B)", Value: parseFloat(selectedProcessCO2.toFixed(2)), Unit: "tCO2", "Governance note": "Controlled method selection from Setup", "QA Source": "Setup" },
-    { Metric: "Fuel Combustion CO2",              Formula: "=SUM('05_Kiln_Fuel_Input'!L4:L7)",  Value: parseFloat(fuelCombustionCO2.toFixed(4)), Unit: "tCO2", "Governance note": "Fossil combustion only", "QA Source": "Kiln_Fuel_Input" },
-    { Metric: "Biogenic CO2 Memo",                Formula: "=SUM('05_Kiln_Fuel_Input'!M4:M7)",  Value: parseFloat(biogenicCO2Memo.toFixed(4)), Unit: "tCO2", "Governance note": "Reported separately; not counted in fossil direct CO2", "QA Source": "Kiln_Fuel_Input" },
-    { Metric: "Direct Embedded CO2",             Formula: "=Selected Process CO2 + Fuel Combustion CO2", Value: parseFloat(directEmbeddedCO2.toFixed(4)), Unit: "tCO2", "Governance note": "Process + fossil fuel combustion", "QA Source": "Calculations" },
-    { Metric: "Grid Electricity MWh",             Formula: "=SUM('06_Electricity_Input'!C4:C6)",Value: gridMWh,        Unit: "MWh", "Governance note": "Purchased grid electricity",       "QA Source": "Electricity_Input" },
-    { Metric: "Indirect Grid CO2",                Formula: "=SUM('06_Electricity_Input'!E4:E6)",Value: parseFloat(indirectGridCO2.toFixed(2)), Unit: "tCO2", "Governance note": "Grid electricity * grid EF", "QA Source": "Electricity_Input" },
-    { Metric: "Total Embedded CO2",              Formula: "=Direct Embedded CO2 + Indirect Grid CO2", Value: parseFloat(totalEmbeddedCO2.toFixed(4)), Unit: "tCO2", "Governance note": "Direct + indirect grid CO2 for reporting mode", "QA Source": "Calculations" },
-    { Metric: "SEE Clinker",                       Formula: "=Direct Embedded CO2 / Clinker Produced", Value: parseFloat(seeClinker.toFixed(4)), Unit: "tCO2/t clinker", "Governance note": "Direct embedded emissions per tonne clinker", "QA Source": "Calculations" },
-    { Metric: "Specific Embedded Emissions Cement",Formula: "=Total Embedded CO2 / Cement Produced", Value: parseFloat(seeCement.toFixed(4)), Unit: "tCO2/t cement", "Governance note": "Final cement product intensity", "QA Source": "Calculations" },
-    { Metric: "Specific Heat Consumption",        Formula: "=Fuel Energy GJ / Clinker Produced", Value: parseFloat(shc.toFixed(4)), Unit: "GJ/t clinker", "Governance note": "Fuel energy per tonne clinker", "QA Source": "Kiln_Fuel_Input" },
-    { Metric: "Evidence Status",                  Formula: "=Evidence register mapped status",   Value: evidenceStatusText, Unit: "status", "Governance note": "Mapped evidence completeness", "QA Source": "Evidence_Register" },
-    { Metric: "Clinker Stockpile Delta",          Formula: "=Clinker Produced - Clinker Used",   Value: clinkerStockpileDelta, Unit: "t", "Governance note": "Produced minus Used = stockpile change", "QA Source": "Production_Input" },
-    { Metric: "Total Fuel Energy",                Formula: "=SUM('05_Kiln_Fuel_Input'!J4:J7)",  Value: parseFloat(totalFuelEnergyGJ.toFixed(2)), Unit: "GJ", "Governance note": "Sum of all fuel thermal energy", "QA Source": "Kiln_Fuel_Input" },
-    { Metric: "Alt Fuel Energy",                  Formula: "Sum of alternative & biomass fuels", Value: parseFloat(altFuelEnergyGJ.toFixed(2)), Unit: "GJ", "Governance note": "RDF + Tyre Chips + Biomass energy", "QA Source": "Kiln_Fuel_Input" },
-    { Metric: "Thermal Substitution Rate (TSR)",  Formula: "=(Alt Fuel Energy / Total Energy)*100", Value: parseFloat(tsr.toFixed(2)), Unit: "%", "Governance note": "Alt fuel energy as % of total fuel energy", "QA Source": "Calculations" },
-  ];
-
-  s.calcRows = calcList;
-  s.calculations = {};
-  calcList.forEach((r) => { s.calculations[r.Metric as string] = r; });
-
-  const qaqcList: SheetRow[] = [
-    {
-      "Check ID": "MB-01",
-      Category: "Mass Balance",
-      "Check Name": "Clinker factor range",
-      Rule: "0.25 <= Clinker Factor <= 1.00",
-      Result: parseFloat(clinkerFactor.toFixed(4)),
-      Status: clinkerFactor >= 0.25 && clinkerFactor <= 1.0 ? "PASS" : "WARNING",
-      Severity: "Warning",
-      Owner: "Production",
-      Comment: clinkerFactor < 0.25 ? "Clinker factor unusually low" : clinkerFactor > 1.0 ? "Clinker factor cannot exceed 1.0" : "Within normal operational range",
-    },
-    {
-      "Check ID": "MB-02",
-      Category: "Mass Balance",
-      "Check Name": "Cement production >= clinker used",
-      Rule: "Cement Produced >= Clinker Used",
-      Result: cementProduced >= clinkerUsed ? "OK" : "MISMATCH",
-      Status: cementProduced >= clinkerUsed ? "PASS" : "FAIL",
-      Severity: "Fail",
-      Owner: "Production",
-      Comment: cementProduced >= clinkerUsed ? "Consistent" : "Cement production cannot be less than clinker consumed",
-    },
-    {
-      "Check ID": "MB-03",
-      Category: "Mass Balance",
-      "Check Name": "Cement mass balance tolerance",
-      Rule: "Clinker + additives ≈ cement ±2%",
-      Result: (function() {
-        const totalIn = clinkerUsed + s.production.reduce((a, r) => a + toNum(r["Gypsum t"]) + toNum(r["Limestone Additive t"]) + toNum(r["Other Additives t"]), 0);
-        const diff = cementProduced > 0 ? Math.abs(totalIn - cementProduced) / cementProduced : 0;
-        return (diff * 100).toFixed(2) + "%";
-      })(),
-      Status: (function() {
-        const totalIn = clinkerUsed + s.production.reduce((a, r) => a + toNum(r["Gypsum t"]) + toNum(r["Limestone Additive t"]) + toNum(r["Other Additives t"]), 0);
-        const diff = cementProduced > 0 ? Math.abs(totalIn - cementProduced) / cementProduced : 0;
-        return diff <= 0.02 ? "PASS" : "WARNING";
-      })(),
-      Severity: "Warning",
-      Owner: "Production",
-      Comment: "Mass balance within 2% tolerance",
-    },
-    {
-      "Check ID": "EI-01",
-      Category: "Emission Intensity",
-      "Check Name": "SEE clinker expected range",
-      Rule: "0.50 <= SEE Clinker <= 1.20",
-      Result: parseFloat(seeClinker.toFixed(4)),
-      Status: seeClinker >= 0.5 && seeClinker <= 1.2 ? "PASS" : "WARNING",
-      Severity: "Warning",
-      Owner: "Sustainability",
-      Comment: "Direct specific clinker intensity verified",
-    },
-    {
-      "Check ID": "EI-02",
-      Category: "Emission Intensity",
-      "Check Name": "SEE cement not extreme",
-      Rule: "0.20 <= SEE Cement <= 1.20",
-      Result: parseFloat(seeCement.toFixed(4)),
-      Status: seeCement >= 0.2 && seeCement <= 1.2 ? "PASS" : "WARNING",
-      Severity: "Warning",
-      Owner: "Sustainability",
-      Comment: "Product embedded emission benchmark",
-    },
-    {
-      "Check ID": "FC-01",
-      Category: "Fuel",
-      "Check Name": "All fuel NCV populated",
-      Rule: "Minimum NCV > 0",
-      Result: s.kilnFuel.length ? Math.min(...s.kilnFuel.map((r) => toNum(r["NCV GJ/unit"]))) : 0,
-      Status: s.kilnFuel.length > 0 && s.kilnFuel.every((r) => toNum(r["NCV GJ/unit"]) > 0) ? "PASS" : "FAIL",
-      Severity: "Fail",
-      Owner: "Energy",
-      Comment: "Heating values present for all fuels",
-    },
-    {
-      "Check ID": "FC-02",
-      Category: "Fuel",
-      "Check Name": "All fuel EF populated",
-      Rule: "Minimum EF > 0",
-      Result: s.kilnFuel.length ? Math.min(...s.kilnFuel.map((r) => toNum(r["EF tCO2/TJ"]))) : 0,
-      Status: s.kilnFuel.length > 0 && s.kilnFuel.every((r) => toNum(r["EF tCO2/TJ"]) > 0) ? "PASS" : "FAIL",
-      Severity: "Fail",
-      Owner: "Sustainability",
-      Comment: "Approved emission factors attached",
-    },
-    {
-      "Check ID": "FC-03",
-      Category: "Fuel",
-      "Check Name": "Biomass fraction valid",
-      Rule: "0 <= Biomass <= 1",
-      Result: s.kilnFuel.length ? `${Math.min(...s.kilnFuel.map((r) => toNum(r["Biomass Fraction"])))} to ${Math.max(...s.kilnFuel.map((r) => toNum(r["Biomass Fraction"])))}` : "0",
-      Status: s.kilnFuel.every((r) => toNum(r["Biomass Fraction"]) >= 0 && toNum(r["Biomass Fraction"]) <= 1.0) ? "PASS" : "FAIL",
-      Severity: "Fail",
-      Owner: "Energy",
-      Comment: "Biomass fractions within physical bounds",
-    },
-    {
-      "Check ID": "FC-04",
-      Category: "Fuel",
-      "Check Name": "Oxidation factor reasonable",
-      Rule: "0.95 <= OxFactor <= 1.00",
-      Result: s.kilnFuel.length ? Math.min(...s.kilnFuel.map((r) => toNum(r["Oxidation Factor"]))) : 1,
-      Status: s.kilnFuel.every((r) => toNum(r["Oxidation Factor"]) >= 0.95 && toNum(r["Oxidation Factor"]) <= 1.0) ? "PASS" : "WARNING",
-      Severity: "Warning",
-      Owner: "Sustainability",
-      Comment: "Kiln combustion efficiency factors valid",
-    },
-    {
-      "Check ID": "EL-01",
-      Category: "Electricity",
-      "Check Name": "Grid EF populated",
-      Rule: "Minimum grid EF > 0",
-      Result: s.electricity.length ? Math.min(...s.electricity.map((r) => toNum(r["Grid EF tCO2/MWh"]))) : 0,
-      Status: s.electricity.length > 0 && s.electricity.every((r) => toNum(r["Grid EF tCO2/MWh"]) > 0) ? "PASS" : "FAIL",
-      Severity: "Fail",
-      Owner: "Utilities",
-      Comment: "Official grid EF applied",
-    },
-    {
-      "Check ID": "EL-02",
-      Category: "Electricity",
-      "Check Name": "Electricity present",
-      Rule: "Grid MWh > 0",
-      Result: gridMWh,
-      Status: gridMWh > 0 ? "PASS" : "WARNING",
-      Severity: "Warning",
-      Owner: "Utilities",
-      Comment: "Scope 2 consumption recorded",
-    },
-    {
-      "Check ID": "CP-01",
-      Category: "Completeness",
-      "Check Name": "Process CO2 calculated",
-      Rule: "Selected Process CO2 > 0",
-      Result: parseFloat(selectedProcessCO2.toFixed(2)),
-      Status: selectedProcessCO2 > 0 ? "PASS" : "FAIL",
-      Severity: "Fail",
-      Owner: "Sustainability",
-      Comment: "Calcination emissions reconciled",
-    },
-    {
-      "Check ID": "EV-01",
-      Category: "Evidence",
-      "Check Name": "Evidence register completeness",
-      Rule: "No missing evidence status",
-      Result: s.evidence.filter((r) => r.Status !== "Mapped").length,
-      Status: s.evidence.length > 0 && s.evidence.every((r) => r.Status === "Mapped") ? "PASS" : "WARNING",
-      Severity: "Warning",
-      Owner: "QA/QC",
-      Comment: "Documentary evidence verification status",
-    },
-    {
-      "Check ID": "PR-01",
-      Category: "Period Lock",
-      "Check Name": "Input period aligned",
-      Rule: "Inputs are in selected quarter",
-      Result: s.setup["Reporting quarter"] || "Q1 2025",
-      Status: "PASS",
-      Severity: "Fail",
-      Owner: "Sustainability",
-      Comment: "Input dates verified against period boundary",
-    },
-    {
-      "Check ID": "MB-04",
-      Category: "Mass Balance",
-      "Check Name": "Clinker stockpile reconciliation",
-      Rule: "Produced - Used = tracked delta",
-      Result: clinkerStockpileDelta,
-      Status: "PASS",
-      Severity: "Warning",
-      Owner: "Production",
-      Comment: `Stock change = ${clinkerStockpileDelta} t`,
-    },
-    {
-      "Check ID": "EI-03",
-      Category: "Emission Intensity",
-      "Check Name": "SHC expected range",
-      Rule: "2.8 <= SHC <= 4.5 GJ/t clinker",
-      Result: parseFloat(shc.toFixed(3)),
-      Status: shc >= 2.8 && shc <= 4.5 ? "PASS" : "WARNING",
-      Severity: "Warning",
-      Owner: "Sustainability",
-      Comment: "Kiln specific heat consumption in normal range",
-    },
-    {
-      "Check ID": "FC-05",
-      Category: "Fuel",
-      "Check Name": "TSR in expected range",
-      Rule: "0% <= TSR <= 80%",
-      Result: parseFloat(tsr.toFixed(2)),
-      Status: tsr >= 0 && tsr <= 80 ? "PASS" : "WARNING",
-      Severity: "Warning",
-      Owner: "Energy",
-      Comment: "Alternative fuel substitution rate verified",
-    },
-    {
-      "Check ID": "CP-02",
-      Category: "Completeness",
-      "Check Name": "Method selection valid",
-      Rule: "Method A or B explicitly selected in Setup",
-      Result: selectedMethod,
-      Status: String(selectedMethod).includes("Method A") || String(selectedMethod).includes("Method B") ? "PASS" : "FAIL",
-      Severity: "Fail",
-      Owner: "Sustainability",
-      Comment: "Calcination method conforms to MRV standards",
-    },
-  ];
-
-  s.qaqc = qaqcList;
-
-  const hasFail = qaqcList.some((r) => r.Status === "FAIL");
-  const hasWarn = qaqcList.some((r) => r.Status === "WARNING");
-  const overallQA = hasFail ? "FAIL" : hasWarn ? "WARNING" : "PASS";
-
-  s.calculations["QA/QC Overall Status"] = {
-    Metric: "QA/QC Overall Status",
-    Formula: "=Aggregate QA/QC status",
-    Value: overallQA,
-    Unit: "status",
-    "Governance note": "Aggregate QA/QC status",
-    "QA Source": "QAQC_Checks",
-  };
-  s.calcRows.push(s.calculations["QA/QC Overall Status"]);
-
-  const quarter = (s.setup["Reporting quarter"] as string) || "Q1 2025";
-  s.reportOutputs = [
-    { "Output Field": "Quarter", Value: quarter, Unit: null, Source: "Setup", "Report Label": "Reporting period", "Governance Position": "Selected-period lock", "Mapped to Cement UI": "Overview / Report Cover" },
-    { "Output Field": "Period Start", Value: s.setup["Period start"] || "2025-01-01", Unit: "date", Source: "Setup", "Report Label": "Period start", "Governance Position": "Selected-period lock", "Mapped to Cement UI": "Overview" },
-    { "Output Field": "Period End", Value: s.setup["Period end"] || "2025-03-31", Unit: "date", Source: "Setup", "Report Label": "Period end", "Governance Position": "Selected-period lock", "Mapped to Cement UI": "Overview" },
-    { "Output Field": "Product", Value: s.setup["Primary product"] || "CEM II/A-L 42.5N", Unit: null, Source: "Setup", "Report Label": "Product selected", "Governance Position": "Product boundary", "Mapped to Cement UI": "Overview" },
-    { "Output Field": "Clinker Production", Value: clinkerProduced, Unit: "t", Source: "Calculations", "Report Label": "Clinker production", "Governance Position": "Production boundary", "Mapped to Cement UI": "Overview / Boundary" },
-    { "Output Field": "Cement Production", Value: cementProduced, Unit: "t", Source: "Calculations", "Report Label": "Cement production", "Governance Position": "Product boundary", "Mapped to Cement UI": "Overview / Boundary" },
-    { "Output Field": "Clinker Factor", Value: parseFloat(clinkerFactor.toFixed(4)), Unit: "ratio", Source: "Calculations", "Report Label": "Clinker factor", "Governance Position": "Product allocation", "Mapped to Cement UI": "Boundary / Bridge" },
-    { "Output Field": "Process CO2", Value: parseFloat(selectedProcessCO2.toFixed(2)), Unit: "tCO2", Source: "Calculations", "Report Label": "Process CO2", "Governance Position": "Direct embedded emissions", "Mapped to Cement UI": "Process CO2 page" },
-    { "Output Field": "Fuel Combustion CO2", Value: parseFloat(fuelCombustionCO2.toFixed(4)), Unit: "tCO2", Source: "Calculations", "Report Label": "Fuel combustion CO2", "Governance Position": "Direct embedded emissions", "Mapped to Cement UI": "Fuel page" },
-    { "Output Field": "Biogenic CO2 Memo", Value: parseFloat(biogenicCO2Memo.toFixed(4)), Unit: "tCO2", Source: "Calculations", "Report Label": "Biogenic CO2 memo", "Governance Position": "Reported separately; not counted", "Mapped to Cement UI": "Fuel page" },
-    { "Output Field": "Direct Embedded CO2", Value: parseFloat(directEmbeddedCO2.toFixed(4)), Unit: "tCO2", Source: "Calculations", "Report Label": "Direct embedded CO2", "Governance Position": "Process + fossil combustion", "Mapped to Cement UI": "Overview" },
-    { "Output Field": "Grid Electricity MWh", Value: gridMWh, Unit: "MWh", Source: "Calculations", "Report Label": "Purchased grid electricity", "Governance Position": "Indirect activity data", "Mapped to Cement UI": "Electricity page" },
-    { "Output Field": "Indirect Grid CO2", Value: parseFloat(indirectGridCO2.toFixed(2)), Unit: "tCO2", Source: "Calculations", "Report Label": "Indirect grid CO2", "Governance Position": "Purchased electricity", "Mapped to Cement UI": "Overview / Electricity" },
-    { "Output Field": "Total Embedded CO2", Value: parseFloat(totalEmbeddedCO2.toFixed(4)), Unit: "tCO2", Source: "Calculations", "Report Label": "Total embedded CO2", "Governance Position": "Direct + indirect grid", "Mapped to Cement UI": "Overview / Report" },
-    { "Output Field": "SEE Clinker", Value: parseFloat(seeClinker.toFixed(4)), Unit: "tCO2/t clinker", Source: "Calculations", "Report Label": "SEE clinker", "Governance Position": "Clinker product intensity", "Mapped to Cement UI": "Bridge" },
-    { "Output Field": "Specific Embedded Emissions Cement", Value: parseFloat(seeCement.toFixed(4)), Unit: "tCO2/t cement", Source: "Calculations", "Report Label": "Specific embedded emissions", "Governance Position": "Final cement product intensity", "Mapped to Cement UI": "Overview / Report" },
-    { "Output Field": "QA/QC Overall Status", Value: overallQA, Unit: "status", Source: "QAQC_Checks", "Report Label": "QA/QC status", "Governance Position": "Internal readiness", "Mapped to Cement UI": "Overview / Export" },
-    { "Output Field": "Evidence Status", Value: evidenceStatusText, Unit: "status", Source: "Evidence_Register", "Report Label": "Evidence status", "Governance Position": "Evidence mapping status", "Mapped to Cement UI": "Overview / Export" },
-    { "Output Field": "Specific Heat Consumption", Value: parseFloat(shc.toFixed(3)), Unit: "GJ/t clinker", Source: "Calculations", "Report Label": "Specific heat consumption", "Governance Position": "Kiln thermal efficiency", "Mapped to Cement UI": "Overview / Dashboard" },
-    { "Output Field": "Thermal Substitution Rate", Value: parseFloat(tsr.toFixed(2)), Unit: "%", Source: "Calculations", "Report Label": "TSR", "Governance Position": "Alt fuel energy share", "Mapped to Cement UI": "Overview / Dashboard" },
-  ];
-  s.reportOutputs.forEach((r) => { r.outputField = r["Output Field"]; });
-
-  const totalEmissionsForShare = totalEmbeddedCO2 > 0 ? totalEmbeddedCO2 : 1;
-  s.dashboard.co2Breakdown = [
-    { component: "Process CO2", tCO2: selectedProcessCO2, share: selectedProcessCO2 / totalEmissionsForShare },
-    { component: "Fuel Combustion CO2", tCO2: fuelCombustionCO2, share: fuelCombustionCO2 / totalEmissionsForShare },
-    { component: "Indirect Grid CO2", tCO2: indirectGridCO2, share: indirectGridCO2 / totalEmissionsForShare },
-  ];
-
-  s.dashboard.kpis = {
-    "Direct Embedded CO2": { value: directEmbeddedCO2, unit: "tCO2", govPos: null },
-    "Total Embedded CO2":  { value: totalEmbeddedCO2, unit: "tCO2", govPos: null },
-    "SEE Cement":          { value: seeCement, unit: "tCO2/t cement", govPos: null },
-    "QA/QC Status":        { value: overallQA as any, unit: "status", govPos: null },
-  };
-
-  return s;
-}
-
-export function createSampleDataset(): any {
-  return {
-    setup: {
-      "Workbook mode": "Cement_QAQC_V28_Online",
-      "Installation / site": "Helwan Cement Plant",
-      Country: "Egypt",
-      "Reporting quarter": "Q1 2025",
-      "Period start": "2025-01-01",
-      "Period end": "2025-03-31",
-      "Primary product": "CEM II/A-L 42.5N",
-      "Boundary approach": "Operational control",
-      "Selected calcination method": "Method B - clinker output",
-      "Assurance status": "Prepared for internal review - not externally verified",
-      "Submission status": "Draft / Online Studio",
-      "CKD correction applied": "No",
-    },
-    production: [
-      { Date: "2025-01-31", Quarter: "Q1 2025", "Kiln Line": "Kiln 1", "Cement Type": "CEM II/A-L 42.5N", "Clinker Produced t": 175000, "Cement Produced t": 230000, "Clinker Used t": 175100, "Gypsum t": 11500, "Limestone Additive t": 43400, "Other Additives t": 0, "Evidence ID": "EV-PROD-JAN", Notes: "January monthly run" },
-      { Date: "2025-02-28", Quarter: "Q1 2025", "Kiln Line": "Kiln 1", "Cement Type": "CEM II/A-L 42.5N", "Clinker Produced t": 165000, "Cement Produced t": 215000, "Clinker Used t": 165050, "Gypsum t": 10750, "Limestone Additive t": 39200, "Other Additives t": 0, "Evidence ID": "EV-PROD-FEB", Notes: "February monthly run" },
-      { Date: "2025-03-31", Quarter: "Q1 2025", "Kiln Line": "Kiln 1", "Cement Type": "CEM II/A-L 42.5N", "Clinker Produced t": 180000, "Cement Produced t": 235000, "Clinker Used t": 180050, "Gypsum t": 11750, "Limestone Additive t": 43200, "Other Additives t": 0, "Evidence ID": "EV-PROD-MAR", Notes: "March monthly run" },
-    ],
-    rawMaterial: [
-      { Date: "2025-01-31", Material: "Raw Meal", "Quantity t": 275000, "CaCO3 %": 78.5, "MgCO3 %": 2.1, "Moisture %": 0.8, "Calcination Conversion": 1.0, "Evidence ID": "EV-RAW-JAN" },
-      { Date: "2025-02-28", Material: "Raw Meal", "Quantity t": 260000, "CaCO3 %": 78.2, "MgCO3 %": 2.0, "Moisture %": 0.9, "Calcination Conversion": 1.0, "Evidence ID": "EV-RAW-FEB" },
-      { Date: "2025-03-31", Material: "Raw Meal", "Quantity t": 282000, "CaCO3 %": 78.6, "MgCO3 %": 2.2, "Moisture %": 0.8, "Calcination Conversion": 1.0, "Evidence ID": "EV-RAW-MAR" },
-    ],
-    kilnFuel: [
-      { Date: "2025-01-31", "Fuel Type": "Petcoke", Quantity: 38000, Unit: "t", "NCV GJ/unit": 32.5, "EF tCO2/TJ": 97.5, "Oxidation Factor": 0.99, "Biomass Fraction": 0.00, "Evidence ID": "EV-FUEL-PETCOKE-Q1" },
-      { Date: "2025-02-28", "Fuel Type": "Coal",    Quantity: 24000, Unit: "t", "NCV GJ/unit": 25.8, "EF tCO2/TJ": 94.6, "Oxidation Factor": 0.99, "Biomass Fraction": 0.00, "Evidence ID": "EV-FUEL-COAL-Q1" },
-      { Date: "2025-03-31", "Fuel Type": "RDF",     Quantity: 12000, Unit: "t", "NCV GJ/unit": 17.0, "EF tCO2/TJ": 85.0, "Oxidation Factor": 0.98, "Biomass Fraction": 0.50, "Evidence ID": "EV-FUEL-RDF-Q1" },
-      { Date: "2025-03-31", "Fuel Type": "Tyre Chips", Quantity: 1300, Unit: "t", "NCV GJ/unit": 31.4, "EF tCO2/TJ": 85.0, "Oxidation Factor": 0.98, "Biomass Fraction": 0.27, "Evidence ID": "EV-FUEL-TYRE-Q1" },
-    ],
-    electricity: [
-      { Date: "2025-01-31", "Meter / Source": "Main Substation M-01", "Grid MWh": 32000, "Grid EF tCO2/MWh": 0.4878, "Self-generation MWh": 0, "Self-generation EF": 0, "Renewable MWh": 0, "Evidence ID": "EV-ELEC-JAN" },
-      { Date: "2025-02-28", "Meter / Source": "Main Substation M-01", "Grid MWh": 30500, "Grid EF tCO2/MWh": 0.4878, "Self-generation MWh": 0, "Self-generation EF": 0, "Renewable MWh": 0, "Evidence ID": "EV-ELEC-FEB" },
-      { Date: "2025-03-31", "Meter / Source": "Main Substation M-01", "Grid MWh": 32500, "Grid EF tCO2/MWh": 0.4878, "Self-generation MWh": 0, "Self-generation EF": 0, "Renewable MWh": 0, "Evidence ID": "EV-ELEC-MAR" },
-    ],
-    constants: [...DEFAULT_CONSTANTS],
-    evidence: [
-      { "Evidence ID": "EV-PROD-JAN", "Evidence Type": "Production log", Description: "January clinker and cement weighbridge log", "Source System": "Kiln DCS / ERP", "Mapped Sheet": "03_Production_Input", Status: "Mapped", Owner: "Production", Reviewer: "MRV Team", Frequency: "Monthly", Notes: "Verified" },
-      { "Evidence ID": "EV-PROD-FEB", "Evidence Type": "Production log", Description: "February clinker and cement weighbridge log", "Source System": "Kiln DCS / ERP", "Mapped Sheet": "03_Production_Input", Status: "Mapped", Owner: "Production", Reviewer: "MRV Team", Frequency: "Monthly", Notes: "Verified" },
-      { "Evidence ID": "EV-PROD-MAR", "Evidence Type": "Production log", Description: "March clinker and cement weighbridge log", "Source System": "Kiln DCS / ERP", "Mapped Sheet": "03_Production_Input", Status: "Mapped", Owner: "Production", Reviewer: "MRV Team", Frequency: "Monthly", Notes: "Verified" },
-      { "Evidence ID": "EV-RAW-JAN",  "Evidence Type": "Lab certificate", Description: "January raw meal carbonate titration analysis", "Source System": "LIMS", "Mapped Sheet": "04_Raw_Material_Input", Status: "Mapped", Owner: "Lab", Reviewer: "MRV Team", Frequency: "Monthly", Notes: "ISO 17025 accredited" },
-      { "Evidence ID": "EV-RAW-FEB",  "Evidence Type": "Lab certificate", Description: "February raw meal carbonate titration analysis", "Source System": "LIMS", "Mapped Sheet": "04_Raw_Material_Input", Status: "Mapped", Owner: "Lab", Reviewer: "MRV Team", Frequency: "Monthly", Notes: "ISO 17025 accredited" },
-      { "Evidence ID": "EV-RAW-MAR",  "Evidence Type": "Lab certificate", Description: "March raw meal carbonate titration analysis", "Source System": "LIMS", "Mapped Sheet": "04_Raw_Material_Input", Status: "Mapped", Owner: "Lab", Reviewer: "MRV Team", Frequency: "Monthly", Notes: "ISO 17025 accredited" },
-      { "Evidence ID": "EV-FUEL-PETCOKE-Q1", "Evidence Type": "Fuel record", Description: "Petcoke delivery weigh tickets and lab NCV certificates", "Source System": "Fuel ERP", "Mapped Sheet": "05_Kiln_Fuel_Input", Status: "Mapped", Owner: "Energy", Reviewer: "MRV Team", Frequency: "Quarterly", Notes: "Verified" },
-      { "Evidence ID": "EV-FUEL-COAL-Q1",    "Evidence Type": "Fuel record", Description: "Coal delivery weigh tickets and lab certificates", "Source System": "Fuel ERP", "Mapped Sheet": "05_Kiln_Fuel_Input", Status: "Mapped", Owner: "Energy", Reviewer: "MRV Team", Frequency: "Quarterly", Notes: "Verified" },
-      { "Evidence ID": "EV-FUEL-RDF-Q1",     "Evidence Type": "Alt fuel record", Description: "RDF biomass certification and moisture reports", "Source System": "Alt Fuel Feeder", "Mapped Sheet": "05_Kiln_Fuel_Input", Status: "Mapped", Owner: "Energy", Reviewer: "MRV Team", Frequency: "Quarterly", Notes: "Biomass 50% attested" },
-      { "Evidence ID": "EV-FUEL-TYRE-Q1",    "Evidence Type": "Alt fuel record", Description: "Tyre chips delivery and rubber biomass evidence", "Source System": "Alt Fuel Feeder", "Mapped Sheet": "05_Kiln_Fuel_Input", Status: "Mapped", Owner: "Energy", Reviewer: "MRV Team", Frequency: "Quarterly", Notes: "Biomass 27% attested" },
-      { "Evidence ID": "EV-ELEC-JAN", "Evidence Type": "Electricity bill", Description: "January utility invoice and fiscal meter export", "Source System": "Electricity Meter", "Mapped Sheet": "06_Electricity_Input", Status: "Mapped", Owner: "Utilities", Reviewer: "MRV Team", Frequency: "Monthly", Notes: "Fiscal grade" },
-      { "Evidence ID": "EV-ELEC-FEB", "Evidence Type": "Electricity bill", Description: "February utility invoice and fiscal meter export", "Source System": "Electricity Meter", "Mapped Sheet": "06_Electricity_Input", Status: "Mapped", Owner: "Utilities", Reviewer: "MRV Team", Frequency: "Monthly", Notes: "Fiscal grade" },
-      { "Evidence ID": "EV-ELEC-MAR", "Evidence Type": "Electricity bill", Description: "March utility invoice and fiscal meter export", "Source System": "Electricity Meter", "Mapped Sheet": "06_Electricity_Input", Status: "Mapped", Owner: "Utilities", Reviewer: "MRV Team", Frequency: "Monthly", Notes: "Fiscal grade" },
-    ],
   };
 }

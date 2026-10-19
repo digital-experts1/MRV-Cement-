@@ -44,8 +44,8 @@ function ReportOutputsContent({ s }: { s: Store }) {
       <PageHeader
         icon="file-text"
         title="Report Outputs"
-        desc="Aggregated regulatory reporting schedule aligned with CBAM, EU ETS, and third-party verification templates."
-        actions={<Chip status={`${s.reportOutputs.length} verified fields`} />}
+        desc="Report output fields computed by the platform engine. Internal working values — not externally verified."
+        actions={<Chip status={`${s.reportOutputs.length} computed fields`} />}
       />
 
       <div style={{ display: "flex", gap: "var(--sp-sm)", flexWrap: "wrap", marginBottom: "var(--sp-lg)" }}>

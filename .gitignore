@@ -8,7 +8,10 @@ Antigravity IDE.exe
 *.xls
 workbook_data.txt
 
-# Environment & OS files
+# Environment & OS files (keep only the placeholder template in Git)
+.env
+.env.*
+!.env.example
 .DS_Store
 Thumbs.db
 *.log

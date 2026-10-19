@@ -1,36 +1,47 @@
 # AI Rules — TRACE FORCE MRV
 
 ## Tech Stack
-- **Next.js 16 (App Router)** with **React 19** and **TypeScript** (strict mode).
+- **Next.js 16 (App Router)** with **React 19** and **TypeScript** (strict mode), run as a **modular monolith**.
 - Routing is file-based: each page lives in `app/<route>/page.tsx`; the root layout is `app/layout.tsx`.
-- Global client state (uploaded workbook, sidebar state) lives in React Context under `context/` (`StoreContext`, `ExplainerContext`), wired up in `app/providers.tsx`.
-- **SheetJS (`xlsx`)** parses the uploaded Excel workbook entirely in the browser (`lib/parser.ts`).
-- **Chart.js 4** renders all charts via canvas wrappers in `components/charts/ChartCanvas.tsx`.
-- **jsPDF** (plus `xlsx` for spreadsheets) generates client-side exports (`lib/export.ts`).
-- Styling uses **plain CSS** design-system files in `styles/` (`main.css`, `components.css`, `print.css`), imported once via `app/globals.css`.
-- Fonts are loaded with `next/font/google` (Inter + JetBrains Mono) in `app/layout.tsx`.
-- Imports use the `@/` path alias, which maps to the project root.
+- Client UI state (active dataset cache, sidebar, upload dialog) lives in React Context under `context/`, wired in `app/providers.tsx`.
+- **decimal.js** for all authoritative arithmetic. **SheetJS (`xlsx`)** for workbook parsing (`lib/parser.ts`).
+- **Chart.js 4** via `components/charts/ChartCanvas.tsx`. **jsPDF** (+ `xlsx`) for exports (`lib/export.ts`).
+- **Vitest** for tests (`npm test`, `tests/**/*.test.ts`).
+- Plain CSS design system in `styles/` (`main.css`, `components.css`, `print.css`) imported via `app/globals.css`.
+- Fonts via `next/font/google` (Inter + JetBrains Mono). Imports use the `@/` alias (project root).
+
+## Architecture (Supervisor Directive 02 — see `docs/mrv/04-target-architecture-adrs.md`)
+- Target: **server-side authoritative calculation and authorization**, **PostgreSQL** persistence, **private** evidence storage. Not yet implemented; provider not yet selected — inspect existing deployment/database configuration first. Never provision paid services, reset databases or assume no deployed data exists.
+- Until the server tier exists, the pure engine in `lib/` is the single calculation path. Keep it free of browser APIs so it can move server-side unchanged.
+- Data model design: `docs/mrv/05-proposed-data-model.md` (tenant scoping via composite FKs + RLS, immutable snapshots, verification events).
+
+## Calculation & data rules (non-negotiable)
+- Workbook import, manual entry, demo and data-package re-import all go through `calculateStore` (`lib/calcEngine.ts`). Workbook totals/statuses are comparison assertions only (`lib/assertions.ts`).
+- Parse numbers only with `lib/numeric.ts` (strict; ambiguous text rejected). Dates via `lib/dates.ts`.
+- Missing is never zero: missing inputs give `null` results and `NOT_EVALUATED`/`FAIL`, never PASS. No silent defaults.
+- Required-data completeness (`lib/completeness.ts`) is separate from QA pass %.
+- Preserve source values and provenance (`_source`) on every input row.
+- A failed import never replaces the active dataset (`lib/importResolution.ts`).
+- Synthetic/demo data is always flagged `synthetic` and labelled on every screen and export.
+- Never claim "verified", "certified" or "compliant". "Mapped" evidence means linked only. External verification requires a separate evidence-backed verification event.
+- AI features are advisory only: never compute authoritative totals, invent savings, approve reports or modify source data.
 
 ## Project Structure
-- `app/` — pages (App Router). Add new routes here and register nav entries in `lib/routes.ts`.
-- `components/layout/` — app shell, sidebar, topbar, footer.
-- `components/ui/` — shared UI primitives (Badge, Chip, KpiCard, PageHeader, EmptyState, etc.).
-- `components/charts/` — Chart.js wrappers. `components/icons/` — inline SVG icon set.
-- `lib/` — pure logic: parsing, calculations (`calcEngine.ts`), formatting, exports, types, chart config.
+- `app/` — pages; register nav entries in `lib/routes.ts`. `app/dev/` — development-only harnesses (404 in production).
+- `components/layout/`, `components/ui/`, `components/charts/`, `components/icons/`, `components/dataentry/`.
+- `lib/` — pure logic: parsing, engine, QA checks, completeness, exports, data package, drafts, types.
+- `tests/` — Vitest suites; fixtures must be synthetic and labelled as such.
+- `docs/mrv/` — architecture, model, backlog, test evidence.
 
 ## Library Rules
-- **UI components:** Reuse/extend components in `components/ui/`. Do NOT add shadcn/ui, MUI, Chakra, or other component libraries.
-- **Styling:** Use the existing CSS classes and variables in `styles/`. Add new styles to `styles/components.css` (print rules to `styles/print.css`). Do NOT introduce Tailwind, CSS-in-JS, or CSS modules.
-- **Icons:** Use `components/icons/Icon.tsx`; add new SVG paths there. Do NOT install lucide-react or other icon packages.
-- **Charts:** Use Chart.js through `ChartCanvas.tsx` and shared colors/defaults from `lib/charts.ts`. Do NOT add Recharts, D3, or other chart libraries.
-- **Excel input/output:** Use `xlsx` only, keeping parsing logic in `lib/parser.ts`.
-- **PDF output:** Use `jspdf` only, keeping export logic in `lib/export.ts`.
-- **State:** Use React Context + hooks (`useStore`-style access via `context/`). Do NOT add Redux, Zustand, or React Query.
-- **Number/date formatting:** Use helpers in `lib/formatter.ts` and `components/ui/Fmt.tsx`.
-- **Types:** Shared types belong in `lib/types.ts`.
+- **UI:** reuse/extend `components/ui/`. No shadcn/ui, MUI, Chakra or other component libraries.
+- **Styling:** existing CSS classes/variables; new styles in `styles/components.css` (print in `styles/print.css`). No Tailwind, CSS-in-JS or CSS modules.
+- **Icons:** `components/icons/Icon.tsx` only. **Charts:** Chart.js via `ChartCanvas.tsx` only.
+- **Excel:** `xlsx` only. **PDF:** `jspdf` only. **State:** React Context (no Redux/Zustand/React Query).
+- **Formatting:** `lib/formatter.ts`, `components/ui/Fmt.tsx`. **Shared types:** `lib/types.ts`.
 
 ## Conventions
-- Components using hooks, browser APIs, or Chart.js must start with `"use client"`.
-- Keep calculation and parsing logic out of components — put it in `lib/`.
-- All processing stays client-side; there is no backend or database.
-- Keep files small and focused; avoid adding new dependencies unless clearly necessary.
+- Components using hooks, browser APIs or Chart.js start with `"use client"`.
+- Keep calculation/parsing logic out of components.
+- Keep `.env*` out of Git (only the placeholder `.env.example` is tracked); never print secrets.
+- Keep files small and focused; add dependencies only when clearly necessary.

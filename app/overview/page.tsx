@@ -33,7 +33,8 @@ function OverviewContent({ s }: { s: Store }) {
   const total = s.qaqc.length;
   const passed = s.qaqc.filter((r) => String(r.Status).toUpperCase() === "PASS").length;
   const failed = s.qaqc.filter((r) => String(r.Status).toUpperCase() === "FAIL").length;
-  const qaPct = total > 0 ? Math.round((passed / total) * 100) : 0;
+  const notEvaluated = s.qaqc.filter((r) => r.Status === "NOT_EVALUATED").length;
+  const qaPct = s.qaPassPct;
 
   const evTotal = s.evidence.length;
   const evMapped = s.evidence.filter((r) => String(r.Status) === "Mapped").length;
@@ -50,7 +51,7 @@ function OverviewContent({ s }: { s: Store }) {
   const method = String(s.setup["Selected calcination method"] || "—");
   const version = String(s.readme.find((r) => r.Control === "Workbook Version")?.Value || "—");
 
-  const qaColor = qaStatus === "PASS" ? "pass" : "fail";
+  const qaColor = qaStatus === "PASS" ? "pass" : qaStatus === "FAIL" ? "fail" : "warn";
   const tsrVal = tsr !== null && tsr !== undefined ? fmtDec(parseFloat(String(tsr)), 2) : "—";
 
   const cats: Record<string, { pass: number; total: number }> = {};
@@ -176,8 +177,16 @@ function OverviewContent({ s }: { s: Store }) {
                 <div className="sc-label">Failed</div>
               </div>
               <div className="scorecard-metric" style={{ padding: "0 24px" }}>
+                <div className="sc-val" style={{ color: notEvaluated > 0 ? "var(--qa-warn)" : undefined }}>{notEvaluated}</div>
+                <div className="sc-label">Not evaluated</div>
+              </div>
+              <div className="scorecard-metric" style={{ padding: "0 24px" }}>
                 <div className="sc-val sc-info">{total}</div>
                 <div className="sc-label">Total</div>
+              </div>
+              <div className="scorecard-metric" style={{ padding: "0 24px" }}>
+                <div className="sc-val" style={{ color: s.completeness.pct === 100 ? "var(--qa-pass)" : "var(--qa-warn)" }}>{s.completeness.pct}%</div>
+                <div className="sc-label">Data complete</div>
               </div>
               <div className="scorecard-metric" style={{ paddingLeft: 24, border: "none" }}>
                 <div className="sc-val" style={{ color: qaPct === 100 ? "var(--qa-pass)" : "var(--qa-warn)" }}>
@@ -255,12 +264,12 @@ function OverviewContent({ s }: { s: Store }) {
                 </span>
               ) : (
                 <span className="badge badge-pass">
-                  <span className="qa-dot qa-dot-pass" /> All evidence mapped and verified
+                  <span className="qa-dot qa-dot-pass" /> All evidence references mapped (not externally verified)
                 </span>
               )}
             </div>
             <div style={{ marginTop: 10, fontSize: 11, color: "var(--text-muted)" }}>
-              Evidence covers: Production, Raw Material, Fuel (×4), Electricity (×3), Factor Library, QA/QC
+              &quot;Mapped&quot; means a document reference is linked in the register. External verification is not recorded in this application.
             </div>
           </div>
         </div>
@@ -270,7 +279,7 @@ function OverviewContent({ s }: { s: Store }) {
         <SectionHeader
           icon="calculator"
           title="All Calculated Metrics"
-          actions={<span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>Sourced from 08_Calculations sheet</span>}
+          actions={<span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>Computed by the platform engine</span>}
         />
         <div className="section-card-body no-pad">
           <div className="table-wrapper" style={{ border: "none" }}>
@@ -285,15 +294,13 @@ function OverviewContent({ s }: { s: Store }) {
                 </tr>
               </thead>
               <tbody>
-                {s.calcRows
-                  .filter((r) => r.Value !== null && r.Value !== undefined)
-                  .map((r) => (
+                {s.calcRows.map((r) => (
                     <tr key={String(r.Metric)}>
                       <td>
                         <strong>{String(r.Metric)}</strong>
                       </td>
                       <td className="num mono">
-                        <Fmt value={r.Value} unit={String(r.Unit || "")} />
+                        {r.Value === null || r.Value === undefined ? <span className="badge badge-missing">Not calculated</span> : <Fmt value={r.Value} unit={String(r.Unit || "")} />}
                       </td>
                       <td className="unit-col">{String(r.Unit || "")}</td>
                       <td style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 280 }}>{String(r["Governance note"] || "")}</td>

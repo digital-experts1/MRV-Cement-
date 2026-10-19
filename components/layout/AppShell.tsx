@@ -4,6 +4,7 @@ import { useEffect, type ReactNode } from "react";
 import { useStore } from "@/context/StoreContext";
 import { ExplainerModal } from "@/components/ui/ExplainerModal";
 import { UploadPrompt } from "@/components/ui/UploadPrompt";
+import { DatasetBanner } from "@/components/ui/DatasetBanner";
 import { Footer } from "./Footer";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
@@ -30,7 +31,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       onDrop={(e) => {
         e.preventDefault();
         const file = e.dataTransfer.files?.[0];
-        if (file && /\.(xlsx|xlsm)$/i.test(file.name)) {
+        if (file && /\.(xlsx|xlsm|json)$/i.test(file.name)) {
           handleFile(file).then((errors) => {
             if (errors.length > 0) openUpload();
           });
@@ -41,6 +42,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <button type="button" className="sidebar-backdrop" aria-label="Close navigation" tabIndex={navOpen ? 0 : -1} onClick={closeNav} />
       <Topbar />
       <main id="content" role="main" aria-live="polite">
+        <DatasetBanner />
         {children}
       </main>
       <Footer />

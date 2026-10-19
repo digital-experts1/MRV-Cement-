@@ -5,10 +5,11 @@ import Link from "next/link";
 import { Icon } from "@/components/icons/Icon";
 import { useStore } from "@/context/StoreContext";
 import { downloadBlankTemplate } from "@/lib/export";
-import { calculateStore, createSampleDataset } from "@/lib/calcEngine";
+import { calculateStore } from "@/lib/calcEngine";
+import { createSampleDataset } from "@/lib/sampleData";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), [tabindex]:not([tabindex="-1"])';
-const SUPPORTED = /\.(xlsx|xlsm)$/i;
+const SUPPORTED = /\.(xlsx|xlsm|json)$/i;
 
 export function UploadPrompt() {
   const { uploadOpen, closeUpload, handleFile, setStoreData, loading, parseError } = useStore();
@@ -48,7 +49,7 @@ export function UploadPrompt() {
 
   async function importFile(file: File) {
     if (!SUPPORTED.test(file.name)) {
-      setErrors([`"${file.name}" is not a supported file. Please choose an .xlsx or .xlsm workbook.`]);
+      setErrors([`"${file.name}" is not a supported file. Choose an .xlsx/.xlsm workbook or a TRACE FORCE MRV data export (.json).`]);
       return;
     }
     setErrors([]);
@@ -108,8 +109,8 @@ export function UploadPrompt() {
         <h2 id="upload-dialog-title">Upload Readings File</h2>
         <div id="upload-dialog-desc">
           <p>
-            Choose a completed TRACE FORCE MRV cement workbook (.xlsx or .xlsm). All 14 sheets are validated, QA/QC checks run,
-            and emissions are calculated in your browser.
+            Choose a completed TRACE FORCE MRV cement workbook (.xlsx or .xlsm) or a data export (.json). Inputs are validated
+            and emissions are recalculated by the platform; workbook totals and statuses are used for comparison only.
           </p>
           <p className="upload-note">
             SCADA, DCS, ERP or lab readings must first be entered into the workbook template — raw SCADA exports are not imported directly.
@@ -131,7 +132,7 @@ export function UploadPrompt() {
               </>
             ) : (
               <>
-                <Icon name="upload" size={16} /> Choose workbook (.xlsx, .xlsm)
+                <Icon name="upload" size={16} /> Choose file (.xlsx, .xlsm, .json)
               </>
             )}
           </button>
@@ -139,7 +140,7 @@ export function UploadPrompt() {
             ref={inputRef}
             type="file"
             id="file-input-modal"
-            accept=".xlsx,.xlsm"
+            accept=".xlsx,.xlsm,.json"
             tabIndex={-1}
             aria-hidden="true"
             style={{ display: "none" }}
@@ -178,7 +179,7 @@ export function UploadPrompt() {
           </Link>
           <span aria-hidden="true" style={{ color: "var(--border-strong)" }}>•</span>
           <button type="button" className="upload-link" onClick={loadSample} disabled={loading}>
-            <Icon name="play" size={11} /> Load demo data
+            <Icon name="play" size={11} /> Load synthetic demo data
           </button>
           <span aria-hidden="true" style={{ color: "var(--border-strong)" }}>•</span>
           <button type="button" className="upload-link" onClick={downloadBlankTemplate}>

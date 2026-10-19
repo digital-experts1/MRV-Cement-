@@ -3,21 +3,33 @@
 Effort: S ≈ ≤1 wk, M ≈ 1–2 wk, L ≈ 2–4 wk for one full-stack engineer with MRV reviewer support. Estimates are
 planning figures, not commitments.
 
-## 10-sprint backlog
+## 10-sprint backlog (revised per Directive 02)
 
 | Sprint | Scope (smallest coherent increment) | Key gaps closed | Depends on | Effort | Owner |
 |---|---|---|---|---|---|
-| 1 | Assessment & plan (this package) | — | — | done | Architect |
-| 1b (optional quick wins, ≤2 days) | Remove fabricated PASS/Mapped from blank template; parse raw numeric values; label demo as synthetic with fictitious plant name; remove unsupported "verified/compliant" copy | G-02, G-03, G-10, G-11 | Approval | S | Engineer |
-| 2 | Server tier + Postgres + auth skeleton; tenant/facility/period/basis; units & conversions; decimal policy; test runner + CI | G-05, G-09, G-12, G-19, G-22, G-23 | D-01, D-05 | L | Architect + Eng |
-| 3 | Server-side import: preserved file + SHA-256, staging, row-level errors, duplicate detection, schema versions, manual entry via same path | G-01, G-08, G-15, G-20, G-24, G-25, G-27 | S2, VT-02, VT-06 | L | Data Eng |
-| 4 | Frozen Q1 reference set, independent oracle, factor register, discrepancy register F01–F06 | G-13, G-14, G-16, G-17, G-18 | S3, VT-01…VT-04 | M–L | MRV Calc Eng |
-| 5 | Versioned pure engine, calculation runs, clinker balance, allocation, stale detection | G-06, G-07, G-13, G-16 | S4 | L | MRV Calc Eng |
-| 6 | QA/QC rule registry, issues, waivers, approval blocking | G-04 | S5 | M | QA Lead |
-| 7 | Evidence files, roles & SoD, period lifecycle, locking, revisions | G-26, G-09 | S6 | L | Security Eng |
-| 8 | Full Q1 2025 cycle, report from frozen run, AT-01…AT-10 executed | G-10, G-11 | S7, D-02, D-03 | M | QA + MRV |
-| 9 | Engineer-focused UI/workflow on top of persisted data | UX | S8 | M | UX |
-| 10 | Security review, backup/restore, monitoring, pilot runbooks, 2nd-plant config | G-21 | S9 | M–L | Ops/Sec |
+| 1 | Assessment & plan | — | — | done | Architect |
+| 1b | **Foundation repairs (mandatory, delivered with Directive 02):** strict numeric parsing; no fabricated PASS/Mapped; NOT_EVALUATED for missing period/stock inputs; single calculation path with workbook values as assertions; failed import keeps dataset; explicit draft resolution; synthetic labelling; wording; re-importable data package; provenance; Vitest + decimal.js | G-01–G-05, G-08, G-10, G-11, G-19 (engine), G-23 | — | done (see 09) | Engineer |
+| 2 | Server tier + Postgres (provider chosen after deployment inspection) + auth skeleton; tenant/facility scope with composite FKs + RLS; ref units; move engine server-side; CI running `npm test` | G-05, G-09, G-12, G-22 | D-01 decision recorded (AD-02/03), deployment inspection | L | Architect + Eng |
+| 3 | Server-side import: preserved file + SHA-256, staging, raw_source_record, row-level errors, duplicate detection, schema versions; manual entry posts to the same endpoint | G-15, G-20, G-24, G-25, G-27 | S2, VT-06 | L | Data Eng |
+| 4 | Frozen Q1 reference set, independent oracle, factor register, discrepancy register F01–F06; **WP-AI-1 design** | G-13, G-14, G-16–G-18 | S3, VT-01…VT-04 (real data) | M–L | MRV Calc Eng |
+| 5 | Versioned engine, calculation_job vs immutable calculation_snapshot (+ snapshot inputs), lineage JSON, product_allocation, inventory reconciliation for all materials; **WP-AI-1 build** | G-06, G-07, G-13, G-16 | S4 | L | MRV Calc Eng |
+| 6 | QA/QC rule registry, issues, waivers, approval blocking; completeness rules in `ref.completeness_rule`; **WP-AI-3 engine scenario API** | G-04 | S5 | M | QA Lead |
+| 7 | Evidence files (private storage), role_assignment scopes, SoD, period lifecycle, locking, verification_statement events | G-26, G-09 | S6 | L | Security Eng |
+| 8 | Full Q1 2025 cycle on real data, report from frozen snapshot, AT-01…AT-10; **WP-AI-2 report assessment** | G-10, G-11 | S7, D-02, D-03 | M | QA + MRV |
+| 9 | Engineer-focused UI/workflow; **WP-AI-3 scenario UI**; AI features behind feature flag with audit log | UX | S8 | M | UX |
+| 10 | Security review (incl. AI prompt-injection / data-leak tests), backup/restore, monitoring, pilot runbooks, 2nd-plant config | G-21 | S9 | M–L | Ops/Sec |
+
+## AI work packages (reserved; advisory only)
+
+Hard rules for every AI package: AI **must not** calculate authoritative totals, invent savings or factors, approve
+or verify reports, or modify official source data. AI reads immutable snapshots and lineage only; every AI output is
+stored with model id, prompt version, input snapshot id and citations, and is labelled "AI-generated, advisory".
+
+| WP | Deliverable | Inputs | Acceptance gate (must pass before release) |
+|---|---|---|---|
+| **WP-AI-1 Explain this number** (design S4, build S5) | Per-metric explanation: formula, contributing inputs with values/units, factors with sources, QA checks affecting it | `calculation_result.lineage`, snapshot inputs/factors | (a) Every number quoted in the explanation exists verbatim in the snapshot (automated diff); (b) every input cited resolves to a snapshot_input id; (c) metric with missing inputs is explained as "not calculated", never estimated; (d) 0 tolerance for numbers not in lineage on a 50-metric synthetic test set. |
+| **WP-AI-2 Report assessment** (S8) | Findings list: issue, severity, cited evidence/QA ids, suggested action owner | Snapshot, QA results, completeness, evidence register, report version | (a) Each finding cites ≥1 resolvable id; uncited findings are discarded automatically; (b) never states "verified/compliant"; (c) detects seeded defects in synthetic fixtures (missing evidence, out-of-period row, stock imbalance) with recall ≥ 90 %; (d) human reviewer accepts/rejects each finding — AI cannot change status. |
+| **WP-AI-3 Mitigation scenarios** (API S6, UI S9) | User/AI proposes parameter changes (e.g. TSR +10 pp, clinker factor −0.02); **the deterministic engine** computes results as a labelled scenario snapshot | Baseline snapshot + explicit parameter deltas | (a) Scenario numbers are produced only by `calculateStore`-equivalent engine (test: AI text numbers equal engine output); (b) scenarios are never written to official activity data; (c) every scenario shows its deltas and baseline id; (d) no savings figure is displayed without an engine run id. |
 
 ## Initial risk register
 

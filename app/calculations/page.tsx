@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { Icon } from "@/components/icons/Icon";
+import { AssertionsPanel } from "@/components/ui/AssertionsPanel";
 import { MissingBadge } from "@/components/ui/Badge";
 import { Chip } from "@/components/ui/Chip";
 import { Fmt } from "@/components/ui/Fmt";
@@ -36,7 +37,8 @@ function FlowConnector({ symbol }: { symbol: string }) {
 
 function CalculationsContent({ s }: { s: Store }) {
   const c = s.calculations;
-  const biogenic = parseFloat(String(c["Biogenic CO2 Memo"]?.Value)) || 0;
+  const biogenicRaw = c["Biogenic CO2 Memo"]?.Value;
+  const biogenic = typeof biogenicRaw === "number" ? `${fmtDec(biogenicRaw, 2)} tCO₂` : "not calculated";
 
   return (
     <>
@@ -44,8 +46,10 @@ function CalculationsContent({ s }: { s: Store }) {
         icon="calculator"
         title="Calculations"
         desc="Complete MRV mathematical chain: process calcination, fuel combustion, grid Scope 2, and specific emissions intensity."
-        actions={<Chip status={`${s.calcRows.length} certified metrics`} />}
+        actions={<Chip status={`${s.calcRows.length} computed metrics`} />}
       />
+
+      <AssertionsPanel s={s} />
 
       <div className="section-card mb-lg">
         <SectionHeader icon="network" title="Calculation Flow Diagram" />
@@ -105,7 +109,7 @@ function CalculationsContent({ s }: { s: Store }) {
           <div style={{ marginTop: 16, padding: "12px 16px", background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.25)", borderRadius: "var(--r)", fontSize: 12, color: "var(--accent-3)", display: "flex", alignItems: "center", gap: 8 }}>
             <Icon name="info" size={15} />
             <div>
-              <strong>Biogenic CO₂ Memo:</strong> {fmtDec(biogenic, 2)} tCO₂ — reported separately, not counted in embedded emissions per CBAM rules.
+              <strong>Biogenic CO₂ Memo:</strong> {biogenic} — reported separately, not counted in direct embedded emissions.
             </div>
           </div>
         </div>

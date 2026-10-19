@@ -66,3 +66,22 @@ factor versions; approvals and reports reference a run ID; revisions create new 
 **ADR-008 Rule-registry QA/QC.** Versioned rules with applicability, severity and statuses
 (pass/fail/not evaluated/not applicable). Missing input ⇒ not evaluated ⇒ never PASS. Approval blocked server-side
 by unresolved blocking issues.
+
+
+---
+
+## Directive 02 — Resolved architecture decisions (status: **Accepted** by supervisor directive)
+
+| ID | Decision | Status / evidence |
+|---|---|---|
+| AD-01 | Keep the existing Next.js app as a **modular monolith**. No rewrite, no microservices. | Accepted. Existing UI conventions and upload behaviour preserved. |
+| AD-02 | **Server-side authoritative calculation and authorization** (route handlers / server actions). | Accepted, **not yet implemented**. Interim: the single pure engine (`lib/calcEngine.ts`, `lib/qaChecks.ts`, `lib/completeness.ts`) has no browser dependencies so it can move server-side unchanged in Sprint 2. |
+| AD-03 | **PostgreSQL** persistence + **private** object storage for source files and evidence. | Accepted, provider **not selected**. Repository inspection (Directive 02): no database code, no ORM, no `vercel.json`, `.vercel/` git-ignored, `.env.local` was empty. Deployed state is unknown and must be inspected before selection; no paid service provisioned, nothing reset. |
+| AD-04 | **Vitest** + **decimal.js**; meaningful regression tests. | Implemented. `npm test`; engine arithmetic uses `Decimal` end-to-end; values are converted to JS numbers only for display/output. |
+| AD-05 | One validated calculation path for workbook import, manual entry, demo and data-package re-import. Workbook 08/09/10/13 values are **comparison assertions only**. | Implemented (`calculateStore`, `lib/assertions.ts`). |
+| AD-06 | Missing ≠ zero. Missing required inputs yield `null` results and `NOT_EVALUATED`/`FAIL`, never PASS. No silent defaults (grid EF, oxidation, conversion, clinker EF, calcination method). | Implemented. |
+| AD-07 | Required-data completeness is computed and displayed separately from QA pass %. Readiness = complete ∧ no rejected inputs ∧ no FAIL ∧ no NOT_EVALUATED ∧ not synthetic. "Ready for internal review" is the strongest status the app can show. | Implemented (`lib/completeness.ts`). |
+| AD-08 | Two export families: **data package** (`.json`, re-importable, inputs + provenance, no calculated values) vs **presentation reports** (PDF/xlsx, marked not re-importable and rejected by the importer). | Implemented, see [08-data-export-format.md](08-data-export-format.md). |
+| AD-09 | Synthetic demo data uses a fictitious facility name and is labelled on every screen and every export; synthetic datasets are never "ready". | Implemented. |
+| AD-10 | "Verified" can only be shown when a `verification_statement` event exists (see 05 §8). Until then all surfaces state "not externally verified". | Wording implemented; event model designed, not implemented. |
+| AD-11 | AI features are advisory: they may explain lineage, assess reports with citations and request deterministic scenario runs; they may not compute authoritative totals, invent savings, approve reports or modify source data. | Work packages reserved in [06](06-backlog-risks-tests.md). |

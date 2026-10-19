@@ -1,8 +1,12 @@
 # TRACE FORCE MRV — Cement QA/QC Analytics Platform
 
-A React + Next.js analytics platform for cement plant emissions reporting. Upload your MRV collection workbook and the platform parses all 14 sheets, runs automated quality checks, calculates emissions, and produces compliance-ready outputs — entirely in the browser.
+A React + Next.js platform for cement plant emissions MRV work. Upload an MRV collection workbook, enter data online, or
+re-import a data export; the platform validates inputs, recalculates emissions with decimal arithmetic, and runs QA/QC
+checks. Workbook totals and statuses are used only as comparison assertions.
 
-Built to meet the data traceability and quality standards of ISO 14064, the GCCA/CSI Cement CO2 and Energy Protocol, and EU CBAM reporting requirements.
+**Status:** internal working tool. Outputs are not externally verified and make no regulatory-compliance claim. No real
+plant data has been validated in this repository (Q1 2025 acceptance is pending real data). Demo data is synthetic and
+labelled as such everywhere.
 
 ---
 
@@ -10,10 +14,11 @@ Built to meet the data traceability and quality standards of ISO 14064, the GCCA
 
 ```bash
 npm install
-npm run dev
+npm run dev     # development server
+npm test        # Vitest acceptance/regression suite (synthetic fixtures)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and upload a schema-compatible `TRACE_FORCE_MRV_Cement_QAQC_V28_Collection_Workbook.xlsx` file.
+Copy `.env.example` to `.env.local` for local configuration (no variables are required yet). Never commit `.env*` files.
 
 ---
 
@@ -22,16 +27,25 @@ Open [http://localhost:3000](http://localhost:3000) and upload a schema-compatib
 ```
 app/                 Next.js App Router pages
 components/          Layout, charts, and shared UI
-context/             Workbook store and explainer state
-lib/                 Parser, formatter, export, routes
-styles/              Design system CSS
+context/             Dataset store and explainer state
+lib/                 Parser, calculation engine, QA checks, exports, data package
+tests/               Vitest acceptance tests and synthetic fixtures
+docs/mrv/            Architecture, data model, backlog, test evidence
 ```
+
+## Data formats
+
+- **Input workbook** (`.xlsx`/`.xlsm`): 14-sheet collection schema, optional `14_Inventory_Movements`.
+- **Data export** (`.json`): re-importable inputs + provenance — see `docs/mrv/08-data-export-format.md`.
+- **Report exports** (PDF / `.xlsx`): presentation only, not re-importable.
 
 ---
 
 ## Technology
 
 - **Next.js 16** (App Router) + **React 19** + TypeScript
-- **SheetJS (xlsx)** — in-browser Excel parsing
-- **Chart.js 4** — charts and gauges
-- **jsPDF** — client-side PDF report generation
+- **decimal.js** — authoritative arithmetic
+- **SheetJS (xlsx)** — Excel parsing
+- **Chart.js 4** — charts
+- **jsPDF** — PDF report generation
+- **Vitest** — tests

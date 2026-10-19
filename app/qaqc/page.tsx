@@ -27,7 +27,8 @@ function QaqcContent({ s }: { s: Store }) {
   const total = checks.length;
   const passed = checks.filter(isPass).length;
   const failed = total - passed;
-  const qaPct = total > 0 ? Math.round((passed / total) * 100) : 0;
+  const qaPct = s.qaPassPct;
+  const overall = String(s.calculations["QA/QC Overall Status"]?.Value ?? "—");
   const cats = groupByCategory(checks);
   const catLabels = Object.keys(cats);
   const catPass = catLabels.map((c) => cats[c].filter(isPass).length);
@@ -41,8 +42,9 @@ function QaqcContent({ s }: { s: Store }) {
         desc={`Automated checks that catch issues before they reach regulators — covering mass balances, physical limits, and completeness across ${catLabels.length} check categories.`}
         actions={
           <>
-            <QaBadge status={failed > 0 ? "FAIL" : "PASS"} />
+            <QaBadge status={overall} />
             <Chip status={`${total} checks`} />
+            <Chip status={`Data ${s.completeness.pct}% complete`} />
           </>
         }
       />

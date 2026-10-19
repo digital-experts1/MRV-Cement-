@@ -48,6 +48,6 @@ export const NAV_SECTIONS: { label: string; keys: RouteKey[] }[] = [
   { label: "Data Inputs", keys: ["dcs", "production", "rawmaterial", "kilnfuel", "electricity"] },
   { label: "Factors", keys: ["constants"] },
   { label: "Outputs", keys: ["calculations", "qaqc", "reportouts"] },
-  { label: "Compliance", keys: ["evidence", "regulatory"] },
+  { label: "Evidence & References", keys: ["evidence", "regulatory"] },
   { label: "Analytics", keys: ["analytics"] },
 ];

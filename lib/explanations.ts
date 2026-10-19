@@ -16,11 +16,11 @@ export const EXPLANATIONS: Record<string, Explanation> = {
     title: "Governance & Control",
     whatIs: "Workbook control sheet documenting versioning, signatories, and data integrity rules.",
     whatDoes: "Records authorized plant personnel, sign-off dates, and legal reporting postures.",
-    whySeeing: "Establishes accountability and regulatory compliance under MRV governance protocols.",
+    whySeeing: "Establishes accountability for the MRV dataset and its controls.",
   },
   "nav-setup": {
     title: "Setup & Reporting Period",
-    whatIs: "Baseline plant configuration and verification timeframe.",
+    whatIs: "Baseline plant configuration and reporting timeframe.",
     whatDoes: "Defines the reporting quarter, facility boundary, kiln technology, and product lines.",
     whySeeing: "Sets the operational scope that governs all subsequent emission calculations.",
   },
@@ -28,7 +28,7 @@ export const EXPLANATIONS: Record<string, Explanation> = {
     title: "DCS / ERP / Lab Boundary",
     whatIs: "Plant instrumentation and data acquisition mapping register.",
     whatDoes: "Maps raw data streams from Distributed Control Systems, weighfeeders, and lab analyzers.",
-    whySeeing: "Proves to third-party verifiers that data originates from calibrated physical meters.",
+    whySeeing: "Documents which systems and meters each input is intended to come from.",
   },
   "nav-production": {
     title: "Production Input",
@@ -63,32 +63,32 @@ export const EXPLANATIONS: Record<string, Explanation> = {
   "nav-calculations": {
     title: "Calculations",
     whatIs: "Mathematical engine and formula execution chain.",
-    whatDoes: "Transforms physical activity data into certified Scope 1 and Scope 2 CO₂ figures.",
+    whatDoes: "Transforms activity data into calculated direct and indirect CO₂ figures (internal, not certified).",
     whySeeing: "Provides full mathematical transparency and audit traceability from raw inputs to reported totals.",
   },
   "nav-qaqc": {
     title: "QA/QC Checks",
-    whatIs: "Automated 18-rule data quality assurance matrix.",
+    whatIs: "Automated data quality check register.",
     whatDoes: "Validates mass balances, physical bounds, thermal efficiencies, and document completeness.",
     whySeeing: "Detects reporting discrepancies, instrumentation drift, or missing evidence before official filing.",
   },
   "nav-reportouts": {
     title: "Report Outputs",
-    whatIs: "Structured compliance schedules formatted for regulatory bodies.",
-    whatDoes: "Aggregates verified values into standard reporting templates (CBAM, EU ETS, national registry).",
-    whySeeing: "Ready-to-submit summary required by competent authorities and verification bodies.",
+    whatIs: "Structured report output fields computed by the platform.",
+    whatDoes: "Aggregates computed values into report fields for internal review.",
+    whySeeing: "Working summary for internal review; not externally verified and not a submission.",
   },
   "nav-evidence": {
     title: "Evidence Register",
     whatIs: "Auditable archive linking every number to physical documentation.",
     whatDoes: "Catalogs calibration certificates, weighbridge tickets, purchase invoices, and lab reports.",
-    whySeeing: "Unsubstantiated data fails third-party verification; this provides proof of evidence readiness.",
+    whySeeing: "Shows which inputs have a linked document reference. Mapping is not verification.",
   },
   "nav-regulatory": {
     title: "Regulatory References",
     whatIs: "Compendium of applicable climate standards and legal statutes.",
     whatDoes: "Maps plant operations to EU CBAM regulations, GCCA guidelines, and local environmental laws.",
-    whySeeing: "Clarifies compliance thresholds, penalty triggers, and reporting obligations.",
+    whySeeing: "Reference context only; it does not establish compliance.",
   },
   "nav-analytics": {
     title: "Analytics Dashboard",
@@ -99,19 +99,19 @@ export const EXPLANATIONS: Record<string, Explanation> = {
   "btn-upload": {
     title: "Upload Workbook",
     whatIs: "Excel file ingestion tool.",
-    whatDoes: "Parses all 14 sheets of a schema-compliant TRACE FORCE MRV collection workbook.",
+    whatDoes: "Reads inputs from a TRACE FORCE MRV collection workbook or data export and recalculates all results.",
     whySeeing: "Allows you to load, validate, and analyze your plant dataset entirely inside your browser.",
   },
   "btn-download-pdf": {
     title: "Download Report",
     whatIs: "Executive PDF export utility.",
-    whatDoes: "Generates a publication-grade MRV verification report with key KPIs, breakdown, and QA status.",
-    whySeeing: "Enables quick sharing with plant leadership, environmental committees, and external auditors.",
+    whatDoes: "Generates an internal QA/QC working report with key KPIs and QA status (not a verification report).",
+    whySeeing: "Enables quick internal sharing. Synthetic demo reports are clearly marked.",
   },
   "btn-export-excel": {
     title: "Export Excel",
-    whatIs: "Verified workbook re-export generator.",
-    whatDoes: "Compiles all parsed data, verified calculations, and QA check results into a structured spreadsheet.",
+    whatIs: "Presentation workbook of computed results (not re-importable).",
+    whatDoes: "Compiles inputs, computed calculations and QA results into a spreadsheet. Use Export Data (.json) to re-import.",
     whySeeing: "Supports offline auditing, record archiving, and data migration into enterprise ERP systems.",
   },
   "kpi-clinker-prod": {
@@ -148,13 +148,13 @@ export const EXPLANATIONS: Record<string, Explanation> = {
     title: "Total Embedded CO₂",
     whatIs: "Combined sum of Scope 1 direct emissions and Scope 2 indirect electricity emissions.",
     whatDoes: "Measures complete cradle-to-gate operational greenhouse gas footprint.",
-    whySeeing: "Official headline figure reported to regulatory bodies and international buyers.",
+    whySeeing: "Headline internal figure; reporting basis must be confirmed before external use.",
   },
   "kpi-see-cement": {
     title: "Specific Embedded Emissions — Cement",
     whatIs: "Emissions intensity metric expressed as tons of CO₂ per ton of finished cement produced.",
     whatDoes: "Normalizes plant emissions against production volume for benchmarking and carbon border adjustment.",
-    whySeeing: "Benchmark figure that directly determines CBAM certificate purchase requirements.",
+    whySeeing: "Key intensity metric for benchmarking; regulatory use depends on the confirmed reporting basis.",
   },
   "kpi-see-clinker": {
     title: "Specific Embedded Emissions — Clinker",
@@ -172,7 +172,7 @@ export const EXPLANATIONS: Record<string, Explanation> = {
     title: "Biogenic CO₂ Memo",
     whatIs: "CO₂ emissions originating from sustainably sourced organic biomass fuels.",
     whatDoes: "Tracked as a separate memorandum item outside standard fossil accounting boundaries.",
-    whySeeing: "Zero-rated under EU ETS and CBAM rules, but mandatory to declare for carbon neutrality verification.",
+    whySeeing: "Reported separately from fossil CO₂ as a memo item.",
   },
   "kpi-grid-mwh": {
     title: "Grid Electricity Consumption",
@@ -188,15 +188,15 @@ export const EXPLANATIONS: Record<string, Explanation> = {
   },
   "kpi-qaqc-status": {
     title: "QA/QC Overall Status",
-    whatIs: "High-level health indicator summarizing results from all 18 automated quality rules.",
-    whatDoes: "Returns PASS only when zero critical balance or physical integrity checks fail.",
-    whySeeing: "Prevents filing non-compliant or inaccurate datasets with auditing authorities.",
+    whatIs: "High-level indicator summarizing all automated quality checks.",
+    whatDoes: "FAIL if any check fails; INCOMPLETE if any check cannot be evaluated because inputs are missing; PASS only when every check passes.",
+    whySeeing: "Internal quality gate. It is not external verification.",
   },
   "kpi-evidence-status": {
     title: "Evidence Readiness Status",
     whatIs: "Completeness rating of audit-trail documentation attached to input figures.",
-    whatDoes: "Flags any unverified data points that lack supporting invoices or meter calibration sheets.",
-    whySeeing: "Assures auditors that data is traceable to verified primary documentation.",
+    whatDoes: "Flags activity rows without a linked evidence reference.",
+    whySeeing: "Shows document linkage only; documents are not verified by this application.",
   },
 };
 
@@ -206,7 +206,7 @@ export function getExplanation(key: string): Explanation {
       title: key.replace(/[-_]/g, " "),
       whatIs: "System metric or configuration parameter.",
       whatDoes: "Used in the MRV calculation pipeline or reporting view.",
-      whySeeing: "Displayed as part of the plant collection and verification dataset.",
+      whySeeing: "Displayed as part of the plant collection dataset.",
     }
   );
 }

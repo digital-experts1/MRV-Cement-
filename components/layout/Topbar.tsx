@@ -5,17 +5,19 @@ import { Icon } from "@/components/icons/Icon";
 import { QaDot } from "@/components/ui/Badge";
 import { useExplainer } from "@/context/ExplainerContext";
 import { useStore } from "@/context/StoreContext";
-import { downloadExcel, downloadPDF } from "@/lib/export";
+import { downloadDataPackage, downloadExcel, downloadPDF } from "@/lib/export";
 
 export function Topbar() {
   const { store, toggleSidebar, openUpload } = useStore();
   const { showExplanation } = useExplainer();
   const [pdfBusy, setPdfBusy] = useState(false);
 
-  const site = store?._valid ? String(store.setup["Installation / site"] || "Demo Cement Plant") : "TRACE FORCE MRV";
-  const quarter = store?._valid ? String(store.setup["Reporting quarter"] || "—") : "No workbook loaded";
+  const site = store?._valid ? String(store.setup["Installation / site"] || "Unnamed facility") : "TRACE FORCE MRV";
+  const quarter = store?._valid
+    ? `${String(store.setup["Reporting quarter"] || "—")}${store.meta.synthetic ? " · SYNTHETIC DEMO" : ""}`
+    : "No dataset loaded";
   const qaStatus = store?._valid ? String(store.calculations["QA/QC Overall Status"]?.Value || "—") : null;
-  const qaColor = qaStatus === "PASS" ? "badge-pass" : qaStatus === "FAIL" ? "badge-fail" : "badge-info";
+  const qaColor = qaStatus === "PASS" ? "badge-pass" : qaStatus === "FAIL" ? "badge-fail" : "badge-warn";
 
   async function onPdf() {
     if (!store) return;
@@ -62,12 +64,22 @@ export function Topbar() {
         <button
           className="btn btn-secondary btn-sm"
           type="button"
-          title="Export Data"
+          title="Presentation workbook of computed results (not re-importable)"
           onClick={() => {
             if (store) downloadExcel(store);
           }}
         >
-          <Icon name="file-spreadsheet" size={14} /> <span className="btn-label">Export Data</span>
+          <Icon name="file-spreadsheet" size={14} /> <span className="btn-label">Report (.xlsx)</span>
+        </button>
+        <button
+          className="btn btn-secondary btn-sm"
+          type="button"
+          title="Re-importable data export with provenance (.json)"
+          onClick={() => {
+            if (store) downloadDataPackage(store);
+          }}
+        >
+          <Icon name="download" size={14} /> <span className="btn-label">Export Data (.json)</span>
         </button>
       </div>
     </header>

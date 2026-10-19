@@ -1,6 +1,8 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { parseDataPackage } from "@/lib/dataPackage";
+import { resolveImport } from "@/lib/importResolution";
 import { parseWorkbook } from "@/lib/parser";
 import type { Store } from "@/lib/types";
 
@@ -76,24 +78,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setParseError(errors.join("\n"));
         resolve(errors);
       };
+      const isJson = /\.json$/i.test(file.name);
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
           const result = e.target?.result;
-          if (!(result instanceof ArrayBuffer)) {
+          let next: Store;
+          if (isJson && typeof result === "string") next = parseDataPackage(result, file.name);
+          else if (!isJson && result instanceof ArrayBuffer) next = parseWorkbook(result, file.name);
+          else {
             fail(["Could not read the selected file."]);
             return;
           }
-          const next = parseWorkbook(result, file.name);
-          // Never replace a valid loaded dataset with a failed import.
-          setStore((prev) => (next._valid || !prev?._valid ? next : prev));
-          if (next._valid) {
-            resolve([]);
-          } else {
-            fail(next._errors.length > 0 ? next._errors : ["The workbook could not be validated."]);
-          }
+          // A failed import never replaces or clears the active dataset.
+          setStore((prev) => resolveImport(prev, next).active);
+          if (next._valid) resolve([]);
+          else fail(resolveImport(null, next).errors);
         } catch (err) {
-          fail([err instanceof Error ? err.message : "Failed to parse workbook"]);
+          fail([err instanceof Error ? err.message : "Failed to parse file"]);
         } finally {
           setLoading(false);
         }
@@ -102,7 +104,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setLoading(false);
         fail(["Failed to read the selected file."]);
       };
-      reader.readAsArrayBuffer(file);
+      if (isJson) reader.readAsText(file);
+      else reader.readAsArrayBuffer(file);
     });
   }, []);
 
