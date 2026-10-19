@@ -1,12 +1,14 @@
+import { devGuard } from "@/lib/server/dev/guard";
 import { ACCEPTANCE_CASES } from "@/tests/acceptance/cases";
 import { MRV_CASES } from "@/tests/mrv/cases";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Development-only: runs the pure-logic suites (Directive 02 acceptance + Directives 04–06 MRV cases). 404 in production. */
-export async function GET() {
-  if (process.env.NODE_ENV === "production") return new Response("Not found", { status: 404 });
+/** Development-only (excluded from production builds): pure-logic suites (Directive 02 acceptance + MRV cases). */
+export async function GET(req: Request) {
+  const denied = devGuard(req);
+  if (denied) return denied;
   const results = [...ACCEPTANCE_CASES, ...MRV_CASES].map((c) => {
     try {
       c.run();

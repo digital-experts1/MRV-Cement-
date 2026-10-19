@@ -1086,6 +1086,7 @@
 .dataset-banner-synthetic { background: var(--qa-fail-dim); border-color: var(--qa-fail-border); color: var(--qa-fail); }
 .dataset-banner-warn { background: var(--qa-warn-dim); border-color: var(--qa-warn-border); color: var(--text-primary); }
 .dataset-banner-warn .icon-svg { color: var(--qa-warn); }
+.upload-notice { margin-bottom: 12px; text-align: left; font-size: 12.5px; }
 .dataset-banner-ok { background: var(--qa-pass-dim); border-color: var(--qa-pass-border); color: var(--text-primary); }
 .dataset-banner-ok .icon-svg { color: var(--qa-pass); }
 .dataset-banner-reasons { color: var(--text-secondary); }

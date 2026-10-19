@@ -104,14 +104,14 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     };
     const range = (spec: RangeSpec) => resolveRange(spec, { timezone: "UTC", now: NOW });
 
-    const importInput = async (uid: string, t: string, f: string, input: MrvInput, opts: { status?: "accepted" | "rejected"; errors?: string[] } = {}) => {
+    const importInput = async (uid: string, t: string, f: string, input: MrvInput, opts: { status?: "accepted" | "rejected"; errors?: string[]; sha256?: string } = {}) => {
       const drafts = toReadingDrafts(input, MONTHLY, "workbook:synthetic.xlsx");
       if (drafts.errors.length) throw new Error(drafts.errors.join("; "));
       const declared = { start: String(input.setup["Period start"]), end: String(input.setup["Period end"]) };
       const eff = effectivePeriod(declared, drafts.readings)!;
       const rejected = opts.status === "rejected";
       const batch: ImportBatchMeta = {
-        id: crypto.randomUUID(), origin: "workbook", status: rejected ? "rejected" : "accepted", filename: "synthetic.xlsx", sha256: null,
+        id: crypto.randomUUID(), origin: "workbook", status: rejected ? "rejected" : "accepted", filename: "synthetic.xlsx", sha256: opts.sha256 ?? null,
         size_bytes: null, mime: null, storage_path: null, errors: opts.errors ?? [], assertions: [], declared_period_start: declared.start,
         declared_period_end: declared.end, synthetic: true, mapping: MONTHLY, effective_from: rejected ? null : eff.from,
         effective_to: rejected ? null : eff.to, effective_basis: rejected ? null : eff.basis,
@@ -284,7 +284,7 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     late.electricity[1]["Grid MWh"] = 30600;
     await importInput(USERS.A, tA, fA1, late);
     const e11 = racing.kind === "run" ? await err(() => rpc(USERS.A, "mrv_finalize_run", "run", tA, fA1, racing.body)) : "no plan";
-    check("a run computed before a concurrent import cannot become current (40001, retry)", !!e11 && e11.startsWith("40001"), e11);
+    check("a run computed before a concurrent import cannot become current (MRV09, recalculate)", !!e11 && e11.startsWith("MRV09"), e11);
     const retried = await calculate(USERS.A, tA, fA1, { preset: "quarter", year: 2025, quarter: 1 });
     check("recalculation after the import succeeds", !!retried.id);
 
@@ -298,6 +298,43 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     const badBody = JSON.stringify({ batch: { id: crypto.randomUUID(), origin: "workbook", status: "accepted", mapping: null }, readings: [{ section: "production", series_key: "x", record_key: "x", interval_start: "2025-01-31", interval_end: "2025-01-31", granularity: "month", measurement_type: "interval_total", mapping_version: MAPPING_VERSION, interval_basis: "x", source_identity: "x", payload: {} }], documents: [] });
     const e12 = await err(() => rpc(USERS.A, "mrv_import_v2", "import", tA, fA1, badBody));
     check("database independently rejects a reading whose granularity contradicts its interval", !!e12 && e12.startsWith("22023"), e12);
+
+    // ── 7b. Duplicate file vs re-applied earlier file; configuration revert A → B → A ──
+    {
+      const shaBase = "a".repeat(64);
+      const shaCorr = "b".repeat(64);
+      const corr2 = createSampleDataset();
+      corr2.production[0]["Clinker Produced t"] = 176000;
+      const r1 = await importInput(USERS.A, tA, fA1, createSampleDataset(), { sha256: shaBase });
+      const r2 = await importInput(USERS.A, tA, fA1, createSampleDataset(), { sha256: shaBase });
+      check("identical file again, nothing would change → duplicate", r1.status === "accepted" && r2.status === "duplicate", { r1: r1.status, r2: r2.status });
+      const r3 = await importInput(USERS.A, tA, fA1, corr2, { sha256: shaCorr });
+      const r4 = await importInput(USERS.A, tA, fA1, createSampleDataset(), { sha256: shaBase });
+      check("re-applying the earlier file after a correction is a revision, not a skipped duplicate", r3.revised === 1 && r4.status === "accepted" && r4.revised === 1, { r3, r4 });
+      const cfgB = createSampleDataset();
+      cfgB.constants = cfgB.constants.map((c, i) => (i === 0 ? { ...c, Value: Number(c.Value) + 0.001 } : c));
+      await importInput(USERS.A, tA, fA1, cfgB);
+      const onB = await calculate(USERS.A, tA, fA1, { preset: "quarter", year: 2025, quarter: 1 });
+      await importInput(USERS.A, tA, fA1, createSampleDataset());
+      await su();
+      const invB = Number((await one<{ n: number }>("select count(*)::int as n from public.run_invalidation where run_id = $1", [onB.id])).n);
+      check("reverting a factor (A → B → A) marks the run calculated on B stale", invB === 1, { invB });
+      const onA = await calculate(USERS.A, tA, fA1, { preset: "quarter", year: 2025, quarter: 1 });
+      await su();
+      const docsBefore = Number((await one<{ n: number }>("select count(*)::int as n from public.config_document where facility_id = $1", [fA1])).n);
+      const withProvenance = createSampleDataset();
+      withProvenance.constants = withProvenance.constants.map((c, i) => ({ ...c, _source: { origin: "workbook", file: "re-upload.xlsx", sheet: "07_Constants_EF_NCV", row: i + 4 } }));
+      await importInput(USERS.A, tA, fA1, withProvenance);
+      await su();
+      const docsAfter = Number((await one<{ n: number }>("select count(*)::int as n from public.config_document where facility_id = $1", [fA1])).n);
+      const invA = Number((await one<{ n: number }>("select count(*)::int as n from public.run_invalidation where run_id = $1", [onA.id])).n);
+      const again = await calculate(USERS.A, tA, fA1, { preset: "quarter", year: 2025, quarter: 1 });
+      check(
+        "identical configuration with different upload provenance: no new version, run not stale, recalculation returns the same run",
+        docsAfter === docsBefore && invA === 0 && again.id === onA.id,
+        { docsBefore, docsAfter, invA, same: again.id === onA.id }
+      );
+    }
 
     // ── 8. Legacy (date-inferred) reading is superseded by an explicitly mapped re-import, history preserved ──
     await su();

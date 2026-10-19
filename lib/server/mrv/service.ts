@@ -471,7 +471,7 @@ export async function calculateRange(
   if (!spec) throw badRequest("Invalid date range");
   const range = resolveRange(spec, { timezone: ctx.timezone, fiscalYearStartMonth: ctx.fiscalYearStartMonth });
 
-  // A concurrent import between loading and finalizing is detected by the database (40001): reload and retry.
+  // A concurrent import between loading and finalizing is detected by the database (MRV09 → 409): reload and retry.
   for (let attempt = 1; ; attempt++) {
     const [readings, docs, expectedSeries] = await Promise.all([
       loadReadings(caller, t, f, range),

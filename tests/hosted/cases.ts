@@ -186,6 +186,75 @@ export async function runHostedCases(): Promise<HostedResult> {
     }
     check("no authoritative run was created by any tampering/replay attempt", (await countRuns()) === before, { before, after: await countRuns() });
 
+    // ── Key rotation: every key other than the configured one is inactive; a retired key id is refused ──
+    for (const retiredId of ["exec-1"].filter((k) => k !== KEY.keyId)) {
+      const r = await rpc(A.db, "mrv_finalize_run", t, e1, "{}", signExecutorRequest({ keyId: retiredId, secret: Buffer.alloc(32, 9) }, "run", { userId: A.uid, tenantId: t, facilityId: e1 }, "{}"));
+      check(`retired executor key ${retiredId} is refused as inactive`, /trusted executor authorization required/.test(errText(r.error)), errText(r.error));
+    }
+    const live = await rpc(A.db, "mrv_finalize_run", t, e1, "{}", sign(A.uid, "run", t, e1, "{}"));
+    check(`configured executor key ${KEY.keyId} passes signature verification`, /invalid run body/.test(errText(live.error)), errText(live.error));
+
+    // ── Concurrent import during calculation (E2): no stale run is ever left valid, retries never duplicate ──
+    const corrected = (bump: number) => {
+      const input = createSampleDataset();
+      input.production = input.production.map((r, i) => (i === 0 ? { ...r, "Clinker Produced t": 175000 + bump } : r));
+      return input;
+    };
+    const correctImport = async (bump: number) => {
+      const input = corrected(bump);
+      const drafts = toReadingDrafts(input, MONTHLY, "demo:SYNTHETIC_E2E");
+      const eff = effectivePeriod({ start: "2025-01-01", end: "2025-03-31" }, drafts.readings)!;
+      const batch: ImportBatchMeta = {
+        id: crypto.randomUUID(), origin: "demo", status: "accepted", filename: `SYNTHETIC_E2E_CORRECTION_${bump}`, sha256: null, size_bytes: null, mime: null, storage_path: null,
+        errors: [], assertions: [], declared_period_start: "2025-01-01", declared_period_end: "2025-03-31", synthetic: true, mapping: MONTHLY,
+        effective_from: eff.from, effective_to: eff.to, effective_basis: eff.basis,
+      };
+      const body = importBody(batch, drafts.readings, toConfigDrafts(input));
+      return rpc(A.db, "mrv_import_v2", t, e2, body, sign(A.uid, "import", t, e2, body));
+    };
+    const runsE2 = async () => (await A.db.from("calculation_run").select("id", { count: "exact", head: true }).eq("facility_id", e2)).count ?? -1;
+    const q1Spec: RangeSpec = { preset: "quarter", year: 2025, quarter: 1 };
+    const bump = 1 + (Date.now() % 997);
+    // (a) Interleaved: plan → correction committed → finalize the stale plan.
+    const stalePlan = await plan(A.db, t, e2, q1Spec);
+    const corr = await correctImport(bump);
+    check("correction import (E2, January clinker revised) accepted as a revision", !corr.error && (corr.data as { revised?: number })?.revised === 1, corr.error ? errText(corr.error) : corr.data);
+    const e2Before = await runsE2();
+    const t0 = Date.now();
+    const staleFin = stalePlan.kind === "run" ? await rpc(A.db, "mrv_finalize_run", t, e2, stalePlan.body, sign(A.uid, "run", t, e2, stalePlan.body)) : null;
+    check("the stale refusal is returned without server-side retries (< 15 s)", Date.now() - t0 < 15_000, { ms: Date.now() - t0 });
+    check("finalizing a plan made before a concurrent correction is refused immediately (MRV09, recalculate)", !!staleFin?.error && /^MRV09 /.test(errText(staleFin.error)), errText(staleFin?.error));
+    check("the refused stale finalize created no run", (await runsE2()) === e2Before, { before: e2Before, after: await runsE2() });
+    const fresh = await plan(A.db, t, e2, q1Spec);
+    const freshFin = fresh.kind === "run" ? await rpc(A.db, "mrv_finalize_run", t, e2, fresh.body, sign(A.uid, "run", t, e2, fresh.body)) : null;
+    const freshRetry = fresh.kind === "run" ? await rpc(A.db, "mrv_finalize_run", t, e2, fresh.body, sign(A.uid, "run", t, e2, fresh.body)) : null;
+    check("recalculation after the correction succeeds; its retry returns the same run", !!freshFin && !freshFin.error && freshRetry?.data === freshFin.data, { err: errText(freshFin?.error), same: freshRetry?.data === freshFin?.data });
+    // (b) Truly concurrent: finalize and a further correction race; the facility lock serialises them.
+    const racePlan = await plan(A.db, t, e2, q1Spec);
+    const e2BeforeRace = await runsE2();
+    const [raceFin, raceImp] = await Promise.all([
+      racePlan.kind === "run" ? rpc(A.db, "mrv_finalize_run", t, e2, racePlan.body, sign(A.uid, "run", t, e2, racePlan.body)) : Promise.resolve(null),
+      correctImport(bump + 1),
+    ]);
+    const finishedRun = raceFin && !raceFin.error ? (raceFin.data as string) : null;
+    const inval = finishedRun ? await A.db.from("run_invalidation").select("id", { count: "exact", head: true }).eq("run_id", finishedRun) : null;
+    check(
+      "race: either the finalize is refused, or it committed first and the import then marked that run stale",
+      !raceImp.error && (finishedRun ? (inval?.count ?? 0) > 0 : /^MRV09 /.test(errText(raceFin?.error))),
+      { finalized: !!finishedRun, invalidated: inval?.count ?? null, finErr: errText(raceFin?.error), impErr: errText(raceImp.error) }
+    );
+    const latest = await plan(A.db, t, e2, q1Spec);
+    const [l1, l2] = latest.kind === "run"
+      ? await Promise.all([1, 2].map(() => rpc(A.db, "mrv_finalize_run", t, e2, latest.body, sign(A.uid, "run", t, e2, latest.body))))
+      : [null, null];
+    check("two concurrent retries of the current calculation yield one run id", !!l1 && !l1.error && !l2?.error && l1.data === l2?.data, { a: l1?.data, b: l2?.data, err: errText(l1?.error ?? l2?.error) });
+    const created = (await runsE2()) - e2BeforeRace;
+    check("race + retries created at most two runs (the possibly-stale one and one current), never duplicates", created >= 1 && created <= 2, { created });
+    const validRuns = await A.db.from("calculation_run").select("id, dependency_sha256").eq("facility_id", e2).eq("range_start", "2025-01-01").eq("range_end", "2025-03-31");
+    const invalidated = new Set(((await A.db.from("run_invalidation").select("run_id").eq("facility_id", e2)).data ?? []).map((x) => x.run_id as string));
+    const validDeps = (validRuns.data ?? []).filter((r) => !invalidated.has(r.id as string)).map((r) => r.dependency_sha256 as string);
+    check("no two valid (non-stale) Q1 runs share a dependency hash in E2", new Set(validDeps).size === validDeps.length, { valid: validDeps.length });
+
     // ── Cross-tenant ──
     const bSees = await Promise.all(["tenant", "facility", "activity_reading", "calculation_run", "import_batch", "config_document"].map(async (tbl) => {
       const q = tbl === "tenant" ? B.db.from(tbl).select("id", { count: "exact", head: true }).eq("id", t) : B.db.from(tbl).select("id", { count: "exact", head: true }).eq("tenant_id", t);

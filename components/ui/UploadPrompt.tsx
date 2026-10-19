@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/icons/Icon";
-import { useScope } from "@/context/ScopeContext";
+import { StaleScopeError, useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { downloadBlankTemplate } from "@/lib/export";
 import { MappingSelect } from "./MappingSelect";
@@ -17,6 +17,7 @@ export function UploadPrompt() {
   const isSynthetic = scope.memberships.find((m) => m.tenantId === scope.tenantId)?.synthetic ?? false;
   const ready = scope.status === "ready" && !!scope.facility;
   const [errors, setErrors] = useState<string[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [mapping, setMapping] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -58,13 +59,16 @@ export function UploadPrompt() {
       return;
     }
     setErrors([]);
+    setNotice(null);
     setBusy(true);
     try {
       const result = await scope.importFile(file, mapping || null);
       if (result.accepted) closeUpload();
       else setErrors(result.errors);
     } catch (e) {
-      setErrors([e instanceof Error ? e.message : String(e)]);
+      // The scope changed while the import was pending: report its real outcome for the original factory, not a failure.
+      if (e instanceof StaleScopeError) setNotice(e.message);
+      else setErrors([e instanceof Error ? e.message : String(e)]);
     } finally {
       setBusy(false);
     }
@@ -72,13 +76,15 @@ export function UploadPrompt() {
 
   async function loadSample() {
     setErrors([]);
+    setNotice(null);
     setBusy(true);
     try {
       const result = await scope.loadDemo();
       if (result.accepted) closeUpload();
       else setErrors(result.errors);
     } catch (e) {
-      setErrors([e instanceof Error ? e.message : String(e)]);
+      if (e instanceof StaleScopeError) setNotice(e.message);
+      else setErrors([e instanceof Error ? e.message : String(e)]);
     } finally {
       setBusy(false);
     }
@@ -198,6 +204,12 @@ export function UploadPrompt() {
         <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginBottom: 14 }} aria-live="polite">
           {loading || busy ? "Uploading, validating, storing readings and calculating on the server…" : "or drag & drop the workbook onto this dialog"}
         </div>
+
+        {notice ? (
+          <div className="dataset-banner dataset-banner-warn upload-notice" role="status">
+            {notice}
+          </div>
+        ) : null}
 
         {errors.length > 0 ? (
           <div className="error-banner upload-errors" role="alert">

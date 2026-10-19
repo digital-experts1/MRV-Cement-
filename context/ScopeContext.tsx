@@ -31,8 +31,8 @@ export interface ScopeFacility {
 }
 
 export class StaleScopeError extends Error {
-  constructor() {
-    super("Scope changed before the response arrived");
+  constructor(message = "Scope changed before the response arrived") {
+    super(message);
   }
 }
 
@@ -335,19 +335,27 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   );
 
   const withImport = useCallback(
-    async <T extends ImportOutcome>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    async <T extends ImportOutcome>(fn: () => Promise<T>): Promise<T> => {
       if (!tenantId || !facility) throw new Error("Select an organization and factory first");
       // New generation without clearing the displayed dataset: in-flight range loads are cancelled so they cannot
       // overwrite the import result, and a rejected import leaves the current dataset untouched.
       abort.current?.abort();
       abort.current = new AbortController();
       const token = guard.current.next();
-      const signal = abort.current.signal;
+      const target = facility;
       setCalculating(false);
       setLoading(true);
       try {
-        const outcome = await fn(signal);
-        if (!isCurrent(token)) throw new StaleScopeError();
+        // The import request itself is never aborted by a scope switch: the server commits it to the factory in its URL,
+        // so cancelling only the browser side would misreport a stored import as failed.
+        const outcome = await fn();
+        if (!isCurrent(token)) {
+          throw new StaleScopeError(
+            outcome.accepted
+              ? `The import into ${target.code} · ${target.name} was stored (${outcome.status}). You switched to another factory or range meanwhile, so its result is not shown here — switch back to ${target.code} to view it.`
+              : `The import into ${target.code} · ${target.name} was not stored. You switched to another factory or range meanwhile; the current view is unchanged.`
+          );
+        }
         await afterImport(outcome, token);
         return outcome;
       } finally {
@@ -363,12 +371,11 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
       if (!facility.permissions.includes("upload.create")) return { accepted: false as const, errors: ["You do not have permission to import data for this factory."] };
       const bytes = await file.arrayBuffer();
       const m = mapping ? `&mapping=${encodeURIComponent(mapping)}` : "";
-      return withImport((signal) =>
+      return withImport(() =>
         mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility.id}/imports?filename=${encodeURIComponent(file.name)}${m}`, {
           method: "POST",
           body: bytes,
           headers: { "content-type": "application/octet-stream" },
-          signal,
         })
       );
     },
@@ -377,14 +384,14 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
 
   const saveManual = useCallback(
     (input: MrvInput, mapping?: string | null) =>
-      withImport((signal) =>
-        mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility?.id}/manual`, { method: "POST", json: mapping ? { input, mapping } : { input }, signal })
+      withImport(() =>
+        mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility?.id}/manual`, { method: "POST", json: mapping ? { input, mapping } : { input } })
       ),
     [tenantId, facility, withImport]
   );
 
   const loadDemo = useCallback(
-    () => withImport((signal) => mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility?.id}/demo`, { method: "POST", signal })),
+    () => withImport(() => mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility?.id}/demo`, { method: "POST" })),
     [tenantId, facility, withImport]
   );
 

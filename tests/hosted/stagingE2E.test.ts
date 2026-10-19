@@ -14,5 +14,5 @@ describe.skipIf(!hostedGuard().ok)("HOSTED: real Supabase Auth + PostgREST + Sto
     expect(res.enabled).toBe(true);
     expect(res.checks.filter((c) => !c.pass)).toEqual([]);
     expect(res.total).toBeGreaterThan(30);
-  }, 180_000);
+  }, 300_000);
 });

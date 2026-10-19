@@ -15,6 +15,8 @@
 --  * The RPCs still run as the signed-in user (auth.uid()) and re-check permissions; they also independently verify that
 --    the run's frozen input equals the pinned, current reading revisions and effective configuration versions.
 
+-- Stale-input refusals use the custom SQLSTATE MRV09 (not 40001: PostgREST automatically retries 40001, which re-ran a
+-- doomed request until its executor signature expired). The application maps MRV09 to HTTP 409 and recalculates.
 create schema if not exists mrv_private;
 revoke all on schema mrv_private from public;
 
@@ -100,6 +102,15 @@ begin
   end;
   return v_key_id;
 end $$;
+
+-- Configuration content without per-upload provenance (rows' "_source"), for change detection only.
+create function mrv_private.strip_source(p jsonb) returns jsonb language sql immutable set search_path = '' as $$
+  select case jsonb_typeof(p)
+    when 'array' then coalesce((select jsonb_agg(case when jsonb_typeof(e) = 'object' then e - '_source' else e end order by i)
+                                from jsonb_array_elements(p) with ordinality t(e, i)), '[]'::jsonb)
+    when 'object' then p - '_source'
+    else p end
+$$;
 
 create function mrv_private.granularity_of(s date, e date) returns text language sql immutable set search_path = '' as $$
   select case
@@ -299,7 +310,22 @@ begin
     select x.id into v_dup from public.import_batch x
       where x.tenant_id = p_tenant and x.facility_id = p_facility and x.status = 'accepted' and x.sha256 = b->>'sha256'
       order by x.received_at limit 1;
-    if v_dup is not null then v_status := 'duplicate'; end if;
+    -- A previously seen file is a duplicate only if it would change nothing now: re-applying an earlier file after a
+    -- correction is a revision (duplicate_of still records the earlier batch).
+    if v_dup is not null
+       and not exists (
+         select 1 from jsonb_array_elements(v_readings) nr
+         where not exists (select 1 from public.activity_reading a
+           where a.tenant_id = p_tenant and a.facility_id = p_facility and a.section = nr->>'section' and a.record_key = nr->>'record_key'
+             and a.is_current and (a.payload - '_source') = (nr->'payload') - '_source'))
+       and not exists (
+         select 1 from jsonb_array_elements(v_docs) nd
+         where mrv_private.strip_source((select c.content from public.config_document c
+                where c.tenant_id = p_tenant and c.facility_id = p_facility and c.kind = nd->>'kind'
+                  and c.effective_from = (b->>'effective_from')::date and c.effective_to = (b->>'effective_to')::date
+                order by c.created_at desc, c.id desc limit 1)) is distinct from mrv_private.strip_source(nd->'content')) then
+      v_status := 'duplicate';
+    end if;
   end if;
 
   insert into public.import_batch (id, tenant_id, facility_id, source_id, origin, status, filename, sha256, size_bytes, duplicate_of,
@@ -362,12 +388,16 @@ begin
     raise exception 'configuration documents need an explicit effective period' using errcode = '22023';
   end if;
   for d in select * from jsonb_array_elements(v_docs) loop
-    if not exists (
-      select 1 from public.config_document c
-      where c.tenant_id = p_tenant and c.facility_id = p_facility and c.kind = d->>'kind'
-        and c.effective_from = v_eff_from and c.effective_to = v_eff_to and c.content = d->'content') then
-      v_cfg_changed := true;
+    -- Compared with the CURRENT (newest) version for this period, ignoring per-upload provenance (_source): unchanged
+    -- content is not stored again (its runs stay valid); any difference — including reverting a factor A → B → A — is a
+    -- new version and marks overlapping runs stale.
+    if mrv_private.strip_source((select c.content from public.config_document c
+        where c.tenant_id = p_tenant and c.facility_id = p_facility and c.kind = d->>'kind'
+          and c.effective_from = v_eff_from and c.effective_to = v_eff_to
+        order by c.created_at desc, c.id desc limit 1)) is not distinct from mrv_private.strip_source(d->'content') then
+      continue;
     end if;
+    v_cfg_changed := true;
     insert into public.config_document (tenant_id, facility_id, batch_id, kind, content, content_hash, effective_from, effective_to, effective_basis)
       values (p_tenant, p_facility, v_batch, d->>'kind', d->'content', encode(sha256(convert_to((d->'content')::text, 'UTF8')), 'hex'),
         v_eff_from, v_eff_to, b->>'effective_basis');
@@ -479,7 +509,7 @@ begin
       where a.tenant_id = p_tenant and a.facility_id = p_facility and a.id = any (v_ids) and a.is_current and a.quality_state = 'accepted'
         and a.mapping_version is not null and a.measurement_type = 'interval_total' and a.interval_start >= v_start and a.interval_end <= v_end
         and a.id = any (v_considered)) <> cardinality(v_ids) then
-    raise exception 'run inputs are not current accepted readings of this facility inside the range' using errcode = '40001';
+    raise exception 'run inputs are not current accepted readings of this facility inside the range' using errcode = 'MRV09';
   end if;
   -- 2. The considered set is exactly the current readings overlapping the range (no concurrent change was missed).
   if exists (select 1 from public.activity_reading a
@@ -488,7 +518,7 @@ begin
      or (select count(*) from public.activity_reading a
          where a.tenant_id = p_tenant and a.facility_id = p_facility and a.is_current and a.id = any (v_considered)
            and a.interval_start <= v_end and a.interval_end >= v_start) <> cardinality(v_considered) then
-    raise exception 'readings changed while the calculation ran; recalculate' using errcode = '40001';
+    raise exception 'readings changed while the calculation ran; recalculate' using errcode = 'MRV09';
   end if;
   -- 3. The frozen input rows are exactly the pinned reading revisions.
   foreach v_pair slice 1 in array array[array['production', 'production'], array['rawMaterial', 'rawMaterial'], array['kilnFuel', 'kilnFuel'],
@@ -510,7 +540,7 @@ begin
                on n.tenant_id = c.tenant_id and n.facility_id = c.facility_id and n.kind = c.kind and n.created_at > c.created_at
               and n.effective_from <= v_start and n.effective_to >= v_end
              where c.id = any (v_docs)) then
-    raise exception 'configuration changed while the calculation ran; recalculate' using errcode = '40001';
+    raise exception 'configuration changed while the calculation ran; recalculate' using errcode = 'MRV09';
   end if;
   for v_doc in
     select k.kind, k.field, c.content from (values ('setup_rows', 'setupRows'), ('constants', 'constants'), ('fuel_defaults', 'fuelDefaults'),

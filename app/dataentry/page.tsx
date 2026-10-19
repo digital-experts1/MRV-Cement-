@@ -6,7 +6,7 @@ import { Icon } from "@/components/icons/Icon";
 import { QaDot } from "@/components/ui/Badge";
 import { EntryTable } from "@/components/dataentry/EntryTable";
 import { MappingSelect } from "@/components/ui/MappingSelect";
-import { useScope } from "@/context/ScopeContext";
+import { StaleScopeError, useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { calculateStore, DEFAULT_FUEL_FACTORS, DEFAULT_CONSTANTS } from "@/lib/calcEngine";
 import { createSampleDataset } from "@/lib/sampleData";
@@ -83,6 +83,7 @@ export default function DataEntryPage() {
   const { active, activeKey, saveManual, status: scopeStatus, canImport } = useScope();
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitNotice, setSubmitNotice] = useState<string | null>(null);
   const [mapping, setMapping] = useState("");
   // Drafts are keyed by user/organization/factory/period; unscoped legacy drafts only exist in the local workspace.
   const draftKey = scopedDraftKey(active);
@@ -240,6 +241,7 @@ export default function DataEntryPage() {
   // server recalculates the period. Rows removed from the form are not deleted from history.
   async function handleSubmit() {
     setSubmitError(null);
+    setSubmitNotice(null);
     setSubmitting(true);
     try {
       const outcome = await saveManual(formData, mapping || null);
@@ -253,7 +255,9 @@ export default function DataEntryPage() {
         router.push("/overview");
       }, 1200);
     } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : String(e));
+      // Scope switched while saving: the server outcome is reported for the original factory, not as a failure.
+      if (e instanceof StaleScopeError) setSubmitNotice(e.message);
+      else setSubmitError(e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
@@ -348,6 +352,11 @@ export default function DataEntryPage() {
       {submitError ? (
         <div className="error-banner mb-lg" role="alert">
           Not stored: {submitError} The previously stored data is unchanged.
+        </div>
+      ) : null}
+      {submitNotice ? (
+        <div className="dataset-banner dataset-banner-warn mb-lg" role="status">
+          {submitNotice}
         </div>
       ) : null}
 
