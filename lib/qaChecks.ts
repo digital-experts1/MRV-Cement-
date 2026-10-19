@@ -194,10 +194,10 @@ export function runQaChecks(ctx: EngineContext): SheetRow[] {
 
   // Source-unit semantics only matter when the carbonate (Method A) pathway is the selected one.
   if (ctx.method === "A" && ctx.input.rawMaterial.length > 0) {
-    const cp03: CheckDef = { id: "CP-03", category: "Completeness", name: "Raw-material unit semantics declared", rule: "Carbonate unit (percent/fraction) and mass basis (dry/wet) declared for every raw-material row", severity: "Fail", owner: "Sustainability" };
-    const sem = carbonateSemantics(ctx.input.rawMaterial);
+    const cp03: CheckDef = { id: "CP-03", category: "Completeness", name: "Raw-material unit semantics declared", rule: "Carbonate unit (percent/fraction) and mass basis (dry/wet) declared for every raw-material row; declarations required by the source profile are mandatory", severity: "Fail", owner: "Sustainability" };
+    const sem = carbonateSemantics(ctx.input.rawMaterial, ctx.input.setup);
     const result = `${sem.undeclaredCarbonate} carbonate / ${sem.undeclaredMassBasis} mass basis undeclared of ${sem.rows}`;
-    if (sem.contradiction) checks.push(check(cp03, "FAIL", result, "CaCO3 values are all ≤ 1 under a % header with no declared unit (contradictory source semantics); Method A not calculated until the unit is declared"));
+    if (sem.unresolved > 0 && sem.profile) checks.push(check(cp03, "FAIL", result, `${sem.unresolved} row(s) lack a unit declaration required by source "${sem.profile.label}" (${sem.profile.basis}); Method A not calculated until declared`));
     else if (sem.undeclaredCarbonate + sem.undeclaredMassBasis > 0) checks.push(check(cp03, "WARNING", result, "Undeclared rows use the column-header unit (%) and the quantity as entered (moisture not deducted); declare units in the import mapping"));
     else checks.push(check(cp03, "PASS", result, "Units declared explicitly on every row"));
   }

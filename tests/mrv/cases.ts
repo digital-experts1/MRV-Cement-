@@ -202,17 +202,44 @@ export const MRV_CASES: MrvCase[] = [
   },
   {
     id: "EN-01",
-    name: "Fractions under a '%' header with no declared unit are contradictory: Method A not calculated (CP-03 FAIL), never rescaled",
+    name: "Low carbonate values alone are no contradiction: header/explicit units are honoured; a source profile's required declaration resolves genuine ambiguity",
     run: () => {
-      const ds = createSampleDataset();
-      ds.setup["Selected calcination method"] = "Method A - raw material input";
-      ds.rawMaterial = ds.rawMaterial.map((x) => ({ ...x, "CaCO3 %": 0.95, "MgCO3 %": 0.02 }));
-      const s = calculateStore(ds, "demo");
-      eq(s.calculations["Process CO2 Method A"].Value, null, "Method A not calculated");
-      eq(s.calculations["Total Embedded CO2"].Value, null, "total not calculated (missing is never zero)");
-      eq(s.qaqc.find((x) => x["Check ID"] === "CP-03")?.Status, "FAIL", "contradictory semantics flagged");
-      eq(s.rawMaterial[0]["CaCO3 %"], 0.95, "source value preserved");
-      ok(calculateStore(createSampleDataset(), "demo").inputIssues.length === 0, "percent inputs (78.5) unaffected");
+      const low = () => {
+        const ds = createSampleDataset();
+        ds.setup["Selected calcination method"] = "Method A - raw material input";
+        ds.rawMaterial = ds.rawMaterial.map((x) => ({ ...x, "CaCO3 %": 0.95, "MgCO3 %": 0.02 }));
+        return ds;
+      };
+      // Platform template (header authoritative): 0.95 under "CaCO3 %" is 0.95 %, calculated, not withheld or rescaled.
+      const s = calculateStore(low(), "demo");
+      eq(s.rawMaterial[0]["CaCO3 Fraction"], 0.0095, "0.95 % → 0.0095 (header honoured)");
+      ok(typeof s.calculations["Process CO2 Method A"].Value === "number", "Method A calculated");
+      eq(s.inputIssues, [], "no issue for small values");
+      eq(s.qaqc.find((x) => x["Check ID"] === "CP-03")?.Status, "WARNING", "undeclared units still flagged, not FAIL");
+      // Explicit row unit is honoured as declared.
+      const expl = low();
+      expl.rawMaterial = expl.rawMaterial.map((x) => ({ ...x, "Carbonate Unit": "fraction" }));
+      eq(calculateStore(expl, "demo").rawMaterial[0]["CaCO3 Fraction"], 0.95, "declared fraction honoured");
+      // Source whose headers are not authoritative (V28 Demo collection workbook): declaration required.
+      const demo = low();
+      demo.setup["Workbook mode"] = "Cement_QAQC_V28_Demo";
+      const ds2 = calculateStore(demo, "demo");
+      eq(ds2.calculations["Process CO2 Method A"].Value, null, "Method A withheld without the required declaration");
+      eq(ds2.qaqc.find((x) => x["Check ID"] === "CP-03")?.Status, "FAIL", "required declaration missing → CP-03 FAIL");
+      eq(ds2.rawMaterial[0]["CaCO3 %"], 0.95, "source value preserved");
+      const rejected = toReadingDrafts(demo, MONTHLY).errors.filter((e) => /requires an explicit Carbonate Unit and Mass Basis declaration/.test(e));
+      eq(rejected.length, demo.rawMaterial.length, "every raw-material row rejected at import without the required declaration");
+      const m = parseMapping("default=calendar_month_of_date;carbonate=fraction;massBasis=dry")!;
+      const drafts = toReadingDrafts(demo, m);
+      eq(drafts.errors, [], "declared units satisfy the source requirement");
+      const cfg = Object.fromEntries(toConfigDrafts(demo).map((d) => [d.kind, d.content]));
+      const resolved = calculateStore(rebuildInput(stored(drafts.readings), cfg, demo.meta), "demo");
+      eq(resolved.rawMaterial[0]["CaCO3 Fraction"], 0.95, "declared fraction applied");
+      eq(resolved.qaqc.find((x) => x["Check ID"] === "CP-03")?.Status, "PASS", "fully declared → CP-03 PASS");
+      // A value outside its unit is still flagged (that is a real contradiction).
+      const over = low();
+      over.rawMaterial[0]["CaCO3 %"] = 120;
+      ok(calculateStore(over, "demo").inputIssues.some((x) => /contradicts its unit/.test(x.reason)), "120 under a % header flagged");
     },
   },
   {

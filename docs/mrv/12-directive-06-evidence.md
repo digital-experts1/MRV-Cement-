@@ -49,12 +49,19 @@ executor key. Forged results without that key are rejected; anyone holding the k
   `massBasis` = dry|wet (UI: *Raw-material units* in the import mapping), or rows carry `Carbonate Unit` / `Moisture Unit` /
   `Mass Basis`. Stamped on each raw-material reading with the mapping version; source values never changed; converted
   values in separate fields (`CaCO3 Fraction`, `MgCO3 Fraction`, `Dry Quantity t`). Row vs import contradiction = error.
-- 0.5 declared or read as percent is 0.5 % (valid). A value outside its declared unit's range is flagged and not converted.
-- Undeclared units: header (%) applies, quantity used as entered; if **every** CaCO3 value is ≤ 1 the semantics are
-  contradictory → Method A not calculated. QA **CP-03** (only when Method A is selected): FAIL / WARNING / PASS.
+- Precedence (revised): explicit unit (row or import) → else the column header (%). Small values are **never**
+  reinterpreted: 0.95 under "CaCO3 %" is 0.95 %. A value outside its unit's range (e.g. 120 %, 95 declared fraction) is
+  still flagged and not converted. The former "every CaCO3 ≤ 1 ⇒ contradiction" rule is removed.
+- Genuine ambiguity is resolved by **source profiles** (`lib/mrv/sourceProfiles.ts`, `trace-source-profiles/v1`), identified
+  by the exact `01_Setup` "Workbook mode": `Cement_QAQC_V28` / `_Online` (platform template) → headers authoritative;
+  `Cement_QAQC_V28_Demo` (collection workbook whose Method A formula uses the % columns as fractions without moisture
+  deduction) → carbonate unit **and** mass basis must be declared. Missing required declarations: rows rejected at import
+  with a mapping error; the engine withholds Method A (CP-03 FAIL). Unknown sources: header applies, CP-03 WARNING while
+  units are undeclared.
 - Engine factor set `STOICH-ROUNDED-MM/v1` (ratios of molar masses rounded to 2 dp — not "exact"). Not changed to match
   the workbook. Production methodology selection requires a documented technical basis.
-- Engine version `trace-mrv-engine/2026.10-d06b.1`; stored runs keep their version and results.
+- Engine version `trace-mrv-engine/2026.10-d06b.2`; stored runs keep their version and results (earlier runs show
+  "recomputation differs" only as a comparison).
 
 ## 4. Q1 2025 demo workbook (DEMO-labelled — not real plant data)
 Test assumptions **pending owner confirmation**: Q1-A1 fuel rows are Q1 totals; Q1-A2 carbonate values are fractions;
@@ -64,7 +71,7 @@ Q1-A3 quantities are dry basis. Factor scenarios kept separate: `WORKBOOK-REPRO/
 | Metric | Workbook | Reference | Application | Status |
 |---|---|---|---|---|
 | Method B, fuel, biogenic, direct, grid, total, SEE, SHC, TSR, clinker factor, production | as in D06 | = | = | within relative 1e-9 (all 17 comparable rows) |
-| Method A, units undeclared | 347,036.4 | not calculated | not calculated | not comparable (contradictory semantics) |
+| Method A, units undeclared | 347,036.4 | not calculated | import rejected (3 raw-material rows) | source profile requires declaration |
 | Method A, units declared (Q1-A2/A3), engine factors | 347,036.4 | 346,808.867397 | 346,808.867397 | ref = app within 1e-9; **−227.53 t (−0.066 %) vs workbook**, explained by factor set, not resolved |
 | Method A, workbook-reproduction factors | 347,036.4 | 347,036.4 | — | reproduces workbook formula only |
 | Stock movement / inventory reconciliation | — | — | — | **unvalidated** — no inventory evidence (MB-04 NOT_EVALUATED) |

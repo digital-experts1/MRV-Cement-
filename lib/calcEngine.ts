@@ -3,6 +3,8 @@ import { computeCompleteness, computeReadiness } from "./completeness";
 import { contentRevision } from "./hash";
 import { parseStrictNumber } from "./numeric";
 import { runQaChecks } from "./qaChecks";
+import { missingRequiredUnits, sourceProfileOf } from "./mrv/sourceProfiles";
+import type { UnitKey } from "./mrv/unitMapping";
 import {
   createEmptyInput,
   type DataOrigin,
@@ -147,7 +149,8 @@ function toFraction(v: Dec, unit: string, field: string, row: SheetRow, idx: num
   return unit === "fraction" ? v : v.div(100);
 }
 
-export function calcRawMaterialRow(row: SheetRow, issues: InputIssue[] = [], idx = 0): RowCalc {
+/** `required`: units the row's source must declare explicitly (lib/mrv/sourceProfiles.ts); without them nothing is converted. */
+export function calcRawMaterialRow(row: SheetRow, issues: InputIssue[] = [], idx = 0, required: UnitKey[] = []): RowCalc {
   const S = "04_Raw_Material_Input";
   const f = (k: string) => readNum(row, k, S, idx, issues);
   const d: Record<string, Dec> = {
@@ -164,18 +167,21 @@ export function calcRawMaterialRow(row: SheetRow, issues: InputIssue[] = [], idx
   for (const [col, val, allowed] of [["Carbonate Unit", carb, ["percent", "fraction"]], ["Moisture Unit", moist, ["percent", "fraction"]], ["Mass Basis", basis, ["dry", "wet"]]] as const) {
     if (val && !(allowed as readonly string[]).includes(val)) issues.push({ section: S, row: rowRef(row, idx), field: col, raw: row[col], reason: `unrecognised unit "${val}"` });
   }
-  const carbUnit = carb === "percent" || carb === "fraction" ? carb : carb ? null : "header";
+  // Explicit unit → used; undeclared → the column header (%) governs, unless the source requires a declaration.
+  const unitFor = (v: string, key: UnitKey) => (v === "percent" || v === "fraction" ? v : v || required.includes(key) ? null : "header");
+  const carbUnit = unitFor(carb, "carbonate");
   d["CaCO3 Fraction"] = carbUnit ? toFraction(d["CaCO3 %"], carbUnit, "CaCO3 %", row, idx, S, issues) : null;
   d["MgCO3 Fraction"] = carbUnit ? toFraction(d["MgCO3 %"], carbUnit, "MgCO3 %", row, idx, S, issues) : null;
   if (basis === "wet") {
-    const mUnit = moist === "percent" || moist === "fraction" ? moist : moist ? null : "header";
+    const mUnit = unitFor(moist, "moisture");
     const m = mUnit ? toFraction(d["Moisture %"], mUnit, "Moisture %", row, idx, S, issues) : null;
     d["Dry Quantity t"] = d["Quantity t"] === null || m === null ? null : d["Quantity t"].mul(new Decimal(1).minus(m));
   } else if (basis === "dry") {
     d["Dry Quantity t"] = d["Quantity t"];
   } else {
-    // Undeclared mass basis: the quantity is used as entered (moisture not deducted) and QA check CP-03 flags it.
-    d["Dry Quantity t"] = basis ? null : d["Quantity t"];
+    // Undeclared mass basis: the quantity is used as entered (moisture not deducted) and QA check CP-03 flags it —
+    // unless the source requires the basis to be declared.
+    d["Dry Quantity t"] = basis || required.includes("massBasis") ? null : d["Quantity t"];
   }
   d["CaCO3 CO2 t"] = mulAll(d["Dry Quantity t"], d["CaCO3 Fraction"], CACO3_RATIO, d["Calcination Conversion"]);
   d["MgCO3 CO2 t"] = mulAll(d["Dry Quantity t"], d["MgCO3 Fraction"], MGCO3_RATIO, d["Calcination Conversion"]);
@@ -183,23 +189,27 @@ export function calcRawMaterialRow(row: SheetRow, issues: InputIssue[] = [], idx
   const co2 = d["Process CO2 Method A t"];
   const status = co2 !== null && co2.gt(0) ? "PASS" : "WARNING";
   const calc = finishRow(row, d, ["Quantity t", "CaCO3 %", "MgCO3 %", "Calcination Conversion", "CaCO3 Fraction", "MgCO3 Fraction", "Dry Quantity t"], status);
-  calc.row["Carbonate Unit Basis"] = carbUnit === "header" ? "column header (%), undeclared" : carbUnit ?? "unrecognised";
-  calc.row["Mass Basis Applied"] = basis || "undeclared (quantity as entered)";
+  const requiredMissing = (key: UnitKey) => required.includes(key) ? "undeclared — required by the source; not converted" : null;
+  calc.row["Carbonate Unit Basis"] = carbUnit === "header" ? "column header (%), undeclared" : carbUnit ?? (carb ? "unrecognised" : requiredMissing("carbonate"));
+  calc.row["Mass Basis Applied"] = basis || requiredMissing("massBasis") || "undeclared (quantity as entered)";
   calc.row["Carbonate Factor Set"] = CARBONATE_FACTOR_SET;
   return calc;
 }
 
 /**
- * Source-unit semantics of the raw-material section. `contradiction`: no row declares its carbonate unit, yet every CaCO3
- * value is ≤ 1 — the "%" header and the values disagree (fractions written under a percent header). Method A is then
- * not calculated until a unit is declared. A single small value (e.g. 0.5 % in a clay row) is not a contradiction.
+ * Source-unit semantics of the raw-material section. Values never establish a contradiction on their own; `unresolved`
+ * counts rows lacking a declaration that their source profile requires (lib/mrv/sourceProfiles.ts). Method A is not
+ * calculated while any row is unresolved.
  */
-export function carbonateSemantics(rows: SheetRow[]) {
-  const undeclaredCarb = rows.filter((r) => !unitOf(r, "Carbonate Unit"));
-  const undeclaredBasis = rows.filter((r) => !unitOf(r, "Mass Basis"));
-  const cas = undeclaredCarb.map((r) => parseStrictNumber(r["CaCO3 %"])).filter((p) => p.kind === "ok").map((p) => (p as { value: Decimal }).value);
-  const contradiction = undeclaredCarb.length === rows.length && cas.length > 0 && cas.every((v) => v.lte(1));
-  return { rows: rows.length, undeclaredCarbonate: undeclaredCarb.length, undeclaredMassBasis: undeclaredBasis.length, contradiction };
+export function carbonateSemantics(rows: SheetRow[], setup: Record<string, unknown>) {
+  const profile = sourceProfileOf(setup);
+  return {
+    rows: rows.length,
+    undeclaredCarbonate: rows.filter((r) => !unitOf(r, "Carbonate Unit")).length,
+    undeclaredMassBasis: rows.filter((r) => !unitOf(r, "Mass Basis")).length,
+    unresolved: rows.filter((r) => missingRequiredUnits(r, profile).length > 0).length,
+    profile,
+  };
 }
 
 export function isAlternativeFuel(fuelType: unknown, biomass: Dec): boolean {
@@ -329,8 +339,8 @@ function aggregate(input: MrvInput, production: RowCalc[], rawMaterial: RowCalc[
   const clinkerProduced = col(production, "Clinker Produced t");
   const cementProduced = col(production, "Cement Produced t");
   const clinkerUsed = col(production, "Clinker Used t");
-  // Contradictory, undocumented carbonate units → Method A not calculated (never rescaled by guessing).
-  const processCO2MethodA = carbonateSemantics(input.rawMaterial).contradiction ? null : col(rawMaterial, "Process CO2 Method A t");
+  // Units required by the source but not declared → Method A not calculated (never rescaled by guessing).
+  const processCO2MethodA = carbonateSemantics(input.rawMaterial, input.setup).unresolved > 0 ? null : col(rawMaterial, "Process CO2 Method A t");
 
   const efIdx = input.constants.findIndex((r) => r["Constant / Factor"] === CLINKER_EF_CONSTANT);
   const clinkerProcessEF = efIdx >= 0 ? readNum(input.constants[efIdx], "Value", "07_Constants_EF_NCV", efIdx, issues) : null;
@@ -398,7 +408,8 @@ export function calculateStore(inputLike: InputLike, fallbackOrigin: DataOrigin 
   const issues: InputIssue[] = [];
 
   const production = input.production.map((r, i) => calcProductionRow(r, issues, i));
-  const rawMaterial = input.rawMaterial.map((r, i) => calcRawMaterialRow(r, issues, i));
+  const requiredUnits = sourceProfileOf(input.setup)?.requiredUnits ?? [];
+  const rawMaterial = input.rawMaterial.map((r, i) => calcRawMaterialRow(r, issues, i, requiredUnits));
   const kilnFuel = input.kilnFuel.map((r, i) => calcFuelRow(r, issues, i));
   const electricity = input.electricity.map((r, i) => calcElectricityRow(r, issues, i));
   const inventory = input.inventory.map((r, i) => calcInventoryRow(r, issues, i));

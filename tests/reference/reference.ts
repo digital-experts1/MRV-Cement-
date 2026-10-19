@@ -7,9 +7,9 @@
  * (tests/reference/q1.ts). That workbook is itself labelled DEMO ("Cement_QAQC_V28_Demo", "Demo Cement Plant"), so the
  * Q1 register is a reconciliation against a demo workbook — not a validation against real plant records.
  *
- * Unit rule (Directive 06B §3): units come only from an explicit declaration (`units`), mirroring lib/mrv/unitMapping.ts.
- * Undeclared: the "%" header applies, unless every CaCO3 value is ≤ 1 — then header and values contradict each other and
- * Method A is not comparable (null). A single small value such as 0.5 % is valid. Mass basis: "wet" deducts moisture;
+ * Unit rule (Directive 06B §3, revised): an explicit declaration (`units`) wins; undeclared, the "%" header applies —
+ * small values are never reinterpreted. `requiredUnits` lists declarations the source itself requires (its headers are
+ * not authoritative); if one is missing, Method A is not comparable (null). Mass basis: "wet" deducts moisture;
  * "dry" or undeclared uses the quantity as entered.
  */
 import Decimal from "decimal.js";
@@ -24,6 +24,7 @@ export interface ReferenceInput {
   inventory: Row[];
   constants: Row[];
   units?: { carbonate?: "percent" | "fraction"; moisture?: "percent" | "fraction"; massBasis?: "dry" | "wet" };
+  requiredUnits?: ("carbonate" | "moisture" | "massBasis")[];
 }
 
 export interface RegisterRow {
@@ -65,9 +66,9 @@ export function referenceMetrics(inp: ReferenceInput) {
   const cement = sum(inp.production, (r) => d(r["Cement Produced t"]));
   const used = sum(inp.production, (r) => d(r["Clinker Used t"]));
   const carbUnit = inp.units?.carbonate;
-  const contradictory = !carbUnit && inp.rawMaterial.length > 0 && inp.rawMaterial.every((r) => { const ca = d(r["CaCO3 %"]); return ca !== null && ca.lte(1); });
+  const unresolved = (inp.requiredUnits ?? []).some((k) => !inp.units?.[k]);
   const share = (v: Decimal | null, unit: "percent" | "fraction" | undefined) => (v === null ? null : unit === "fraction" ? v : v.div(100));
-  const methodA = contradictory ? null : sum(inp.rawMaterial, (r) => {
+  const methodA = unresolved ? null : sum(inp.rawMaterial, (r) => {
     const q0 = d(r["Quantity t"]);
     const moist = share(d(r["Moisture %"]), inp.units?.moisture);
     const q = inp.units?.massBasis === "wet" ? (q0 && moist ? q0.mul(new Decimal(1).minus(moist)) : null) : q0;

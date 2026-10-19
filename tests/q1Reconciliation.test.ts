@@ -15,19 +15,22 @@ describe("Q1 2025 collection workbook (DEMO-labelled) — workbook vs independen
     expect(q.assumptions.map((a) => a.status)).toEqual(["pending owner confirmation", "pending owner confirmation", "pending owner confirmation"]);
   });
 
-  it("without a unit declaration: no discrepancies; Method A not calculated (contradictory % header), not rescaled", () => {
-    expect(q.register.filter((r) => r.status === "discrepancy")).toEqual([]);
-    const notComparable = q.register.filter((r) => r.status === "not_comparable").map((r) => r.metric);
-    expect(notComparable).toEqual(["Process CO2 Method A", "Stock movement closing difference", "Product allocation (per cement type)"]);
-    expect(q.inputIssues).toEqual([]);
+  it("source profile requires explicit carbonate unit and mass basis: without them the raw-material rows are rejected at import", () => {
+    expect(q.requiredUnits).toEqual(["carbonate", "massBasis"]);
+    expect(q.undeclaredErrors.length).toBeGreaterThan(0);
+    expect(q.undeclaredErrors.every((e) => e.includes("04_Raw_Material_Input") && /requires an explicit Carbonate Unit and Mass Basis declaration/.test(e))).toBe(true);
+    expect(q.undeclaredReferenceMethodA).toBeNull();
+    expect(q.undeclaredDirectMethodA).toBeNull();
   });
 
   it("with the declared units (fraction, dry): Method A is calculated, original values preserved, mapping version recorded", () => {
-    expect(q.declaredInputIssues).toEqual([]);
+    expect(q.inputIssues).toEqual([]);
     expect(q.declaredRawRows.every((r) => r.unit === "fraction" && r.basis === "dry" && r.version === "trace-source-units/v1")).toBe(true);
     expect(q.declaredRawRows.every((r) => typeof r.caSource === "number" && r.caSource === r.caFraction)).toBe(true);
-    expect(q.registerDeclared.filter((r) => r.status === "discrepancy")).toEqual([]);
-    expect(q.registerDeclared.find((r) => r.metric === "Process CO2 Method A")?.status).toBe("within_tolerance");
+    expect(q.register.filter((r) => r.status === "discrepancy")).toEqual([]);
+    expect(q.register.find((r) => r.metric === "Process CO2 Method A")?.status).toBe("within_tolerance");
+    const notComparable = q.register.filter((r) => r.status === "not_comparable").map((r) => r.metric);
+    expect(notComparable).toEqual(["Stock movement closing difference", "Product allocation (per cement type)"]);
   });
 
   it("keeps workbook-reproduction and engine factor scenarios separate (no factor changed to match the workbook)", () => {

@@ -10,7 +10,8 @@
  *  - record_key = series | interval | measurement type. Re-importing the same record key with identical content is
  *    "unchanged"; with different content it creates a new revision.
  *  - Raw-material rows get the import's unit declaration stamped as columns (Carbonate Unit, Moisture Unit, Mass Basis,
- *    Unit Mapping Version); a contradicting row-level declaration is a validation error.
+ *    Unit Mapping Version); a contradicting row-level declaration is a validation error, and so is a missing declaration
+ *    that the source's profile requires (lib/mrv/sourceProfiles.ts).
  *  - legacy_key = the Directive 05 key (series | date | #n) so a re-import with an explicit mapping supersedes readings
  *    that were stored under the old date-based inference (auditable correction; originals are kept).
  */
@@ -20,6 +21,7 @@ import { toIsoDate } from "@/lib/dates";
 import { MAPPING_VERSION, resolveRowInterval, type Granularity, type ImportMapping, type MeasurementType } from "./importMapping";
 import { SECTION_LABELS_CLIENT } from "./sectionLabels";
 import { applyUnitMapping } from "./unitMapping";
+import { missingRequiredUnits, requirementError, sourceProfileOf } from "./sourceProfiles";
 import { sha256Json } from "./sha";
 
 export const READING_SECTIONS = ["production", "rawMaterial", "kilnFuel", "electricity", "inventory"] as const;
@@ -94,6 +96,7 @@ function contentOf(row: SheetRow): Record<string, unknown> {
 export function toReadingDrafts(input: MrvInput, mapping: ImportMapping | null, sourceIdentity = "unknown"): { readings: ReadingDraft[]; errors: string[] } {
   const readings: ReadingDraft[] = [];
   const errors: string[] = [];
+  const profile = sourceProfileOf(input.setup);
   for (const section of READING_SECTIONS) {
     const legacyOcc = new Map<string, number>();
     const bySeries = new Map<string, { start: string; end: string; where: string }[]>();
@@ -104,6 +107,11 @@ export function toReadingDrafts(input: MrvInput, mapping: ImportMapping | null, 
       const stamped = section === "rawMaterial" ? applyUnitMapping(sourceRow, mapping?.units) : sourceRow;
       if (typeof stamped === "string") {
         errors.push(`${where}: ${stamped}.`);
+        return;
+      }
+      const missing = section === "rawMaterial" ? missingRequiredUnits(stamped, profile) : [];
+      if (missing.length && profile) {
+        errors.push(`${where}: ${requirementError(missing, profile)}`);
         return;
       }
       const row = stamped as SheetRow;

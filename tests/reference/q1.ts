@@ -40,6 +40,11 @@ export const Q1_ASSUMPTIONS = [
   { id: "Q1-A3", subject: "Raw-material mass basis", assumption: "Quantity is dry mass (no moisture deduction)", status: "pending owner confirmation" },
 ] as const;
 export const Q1_UNITS_DECLARED = ";carbonate=fraction;massBasis=dry";
+/**
+ * Source-specific requirement, read here independently of lib/mrv/sourceProfiles.ts: the "Cement_QAQC_V28_Demo" workbook's
+ * Method A formula contradicts its % headers, so carbonate unit and mass basis must be declared explicitly.
+ */
+const requiredUnitsOf = (mode: unknown): ("carbonate" | "massBasis")[] => (String(mode ?? "").trim() === "Cement_QAQC_V28_Demo" ? ["carbonate", "massBasis"] : []);
 
 /**
  * Named, versioned carbonate factor scenarios — kept separate, never mixed:
@@ -71,9 +76,10 @@ export function q1Reconciliation() {
     electricity: rows(wb, "06_Electricity_Input"),
     inventory: [],
     constants: rows(wb, "07_Constants_EF_NCV").filter((r) => r["Constant / Factor"]),
+    requiredUnits: requiredUnitsOf(setup["Workbook mode"]),
   };
 
-  // Application path (real import path), once without and once with the declared unit assumptions.
+  // Application path (real import path). Without the required unit declaration the import is rejected; with it, it runs.
   const parsed = parseWorkbook(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, Q1_FILE);
   const cfg = Object.fromEntries(toConfigDrafts(parsed.inputs).map((d) => [d.kind, d.content]));
   const runApp = (mapping: string) => {
@@ -86,25 +92,29 @@ export function q1Reconciliation() {
     for (const r of store.calcRows) app[String(r.Metric)] = typeof r.Value === "number" ? r.Value : null;
     return { drafts, sel, store, app };
   };
-  const undeclared = runApp(Q1_MAPPING);
+  const undeclaredErrors = toReadingDrafts(parsed.inputs, parseMapping(Q1_MAPPING), Q1_FILE).errors;
   const declared = runApp(Q1_MAPPING + Q1_UNITS_DECLARED);
-  const { drafts, sel, store } = undeclared;
+  const { drafts, sel, store } = declared;
   const withWorkbook = (rowsIn: ReturnType<typeof discrepancyRegister>) =>
     rowsIn.map((r) => {
       const w = workbook[r.metric];
       return { ...r, workbook: typeof w === "number" ? new Decimal(w).toSignificantDigits(15).toString() : (w ?? null) };
     });
-  const register = withWorkbook(discrepancyRegister(ref, undeclared.app));
-  const registerDeclared = withWorkbook(discrepancyRegister({ ...ref, units: { carbonate: "fraction", massBasis: "dry" } }, declared.app));
+  const register = withWorkbook(discrepancyRegister({ ...ref, units: { carbonate: "fraction", massBasis: "dry" } }, declared.app));
+  const undeclaredRef = discrepancyRegister(ref, {}).find((r) => r.metric === "Process CO2 Method A")!.reference;
 
   // Method A in the workbook's formula form (Σ Qty × (CaCO3 × f1 + MgCO3 × f2); fractions per Q1-A2, as-entered mass per Q1-A3)
-  // under each named factor scenario. The engine additionally applies the row's Calcination Conversion (see registerDeclared).
+  // under each named factor scenario. The engine additionally applies the row's Calcination Conversion (see register).
   const scenarioA = (caF: string, mgF: string) =>
     ref.rawMaterial.reduce((acc, r) => acc.plus(new Decimal(Number(r["Quantity t"])).mul(new Decimal(Number(r["CaCO3 %"])).mul(caF).plus(new Decimal(Number(r["MgCO3 %"])).mul(mgF)))), new Decimal(0));
 
   return {
     labelledDemo: String(setup["Workbook mode"] ?? "").includes("Demo"),
     mapping: Q1_MAPPING,
+    requiredUnits: ref.requiredUnits,
+    undeclaredErrors,
+    undeclaredReferenceMethodA: undeclaredRef,
+    undeclaredDirectMethodA: parsed.calculations["Process CO2 Method A"]?.Value ?? null,
     mappingErrors: drafts.errors,
     readings: drafts.readings.map((d) => ({ sheet: d.source_ref.sheet, row: d.source_ref.row, section: d.section, interval: `${d.interval_start}..${d.interval_end}`, basis: d.interval_basis })),
     excluded: sel.excluded.length,
@@ -112,9 +122,7 @@ export function q1Reconciliation() {
     inputIssues: store.inputIssues,
     qa: store.qaqc.map((q) => ({ id: q["Check ID"], status: q.Status, result: q.Result })),
     register,
-    registerDeclared,
     declaredRawRows: declared.store.rawMaterial.map((r) => ({ unit: r["Carbonate Unit"], basis: r["Mass Basis"], version: r["Unit Mapping Version"], caSource: r["CaCO3 %"], caFraction: r["CaCO3 Fraction"] })),
-    declaredInputIssues: declared.store.inputIssues,
     assumptions: Q1_ASSUMPTIONS,
     methodAScenarios: {
       workbookCached: workbook["Process CO2 Method A"] ?? null,

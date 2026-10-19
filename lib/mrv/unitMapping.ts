@@ -8,9 +8,9 @@
  *  - the declaration is stamped on every raw-material row with UNIT_MAPPING_VERSION; the original values are never changed;
  *  - a row declaring a different unit than the import is an error (contradiction), never silently overridden;
  *  - the engine converts explicitly and reports values that contradict their declared unit (e.g. 95 declared as fraction).
- * Rows without a declaration fall back to the header unit (%) and are flagged by QA check CP-03; if every CaCO3 value of
- * such rows is ≤ 1 (header says % but values look like fractions) Method A is not calculated until the unit is declared.
- * 0.5 declared as percent is a valid 0.5 % — it is never rejected for being below 1.
+ * Rows without a declaration fall back to the header unit (%) and are flagged by QA check CP-03. Small values are never
+ * reinterpreted (0.95 under a % header is 0.95 %). Where a known source contradicts its headers, its profile requires an
+ * explicit declaration (lib/mrv/sourceProfiles.ts).
  */
 export const UNIT_MAPPING_VERSION = "trace-source-units/v1";
 
