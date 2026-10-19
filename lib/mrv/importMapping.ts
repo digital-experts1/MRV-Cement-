@@ -10,6 +10,7 @@
  */
 import { toIsoDate } from "@/lib/dates";
 import { daysInMonth, parseDate, ymd } from "./dateRanges";
+import { isUnitValue, UNIT_KEYS, type UnitKey, type UnitMapping } from "./unitMapping";
 
 export const MAPPING_VERSION = "trace-row-interval/v1";
 
@@ -37,35 +38,55 @@ export interface ImportMapping {
   interval: IntervalMapping | null;
   /** Per-sheet declarations, e.g. monthly production rows next to quarter-total fuel rows in one workbook. */
   sections?: Partial<Record<MappableSection, IntervalMapping>>;
+  /** Source-unit semantics for raw-material rows (lib/mrv/unitMapping.ts). */
+  units?: UnitMapping;
 }
 
 const isInterval = (v: string): v is IntervalMapping => (INTERVAL_MAPPINGS as readonly string[]).includes(v);
 
+const UNIT_KEY_LIST = Object.keys(UNIT_KEYS) as UnitKey[];
+
 /**
- * Parses the transport form: either a single mapping name (all sections), or `default=<m>;kilnFuel=<m>;…` pairs.
- * Anything unknown, duplicated or empty is rejected (null) — never partially applied.
+ * Parses the transport form: either a single mapping name (all sections), or `default=<m>;kilnFuel=<m>;carbonate=fraction;…`
+ * pairs. Anything unknown, duplicated or empty is rejected (null) — never partially applied.
  */
 export function parseMapping(value: unknown): ImportMapping | null {
   if (typeof value !== "string" || value.length > 400) return null;
   if (isInterval(value)) return { version: MAPPING_VERSION, interval: value };
   let interval: IntervalMapping | null = null;
   const sections: Partial<Record<MappableSection, IntervalMapping>> = {};
+  const units: UnitMapping = {};
   const seen = new Set<string>();
   for (const pair of value.split(";")) {
     const [key, v, extra] = pair.split("=");
-    if (extra !== undefined || !key || !v || !isInterval(v) || seen.has(key)) return null;
+    if (extra !== undefined || !key || !v || seen.has(key)) return null;
     seen.add(key);
+    if ((UNIT_KEY_LIST as string[]).includes(key)) {
+      if (!isUnitValue(key as UnitKey, v)) return null;
+      (units as Record<string, string>)[key] = v;
+      continue;
+    }
+    if (!isInterval(v)) return null;
     if (key === "default") interval = v;
     else if ((MAPPABLE_SECTIONS as readonly string[]).includes(key)) sections[key as MappableSection] = v;
     else return null;
   }
-  if (!interval && Object.keys(sections).length === 0) return null;
-  return Object.keys(sections).length ? { version: MAPPING_VERSION, interval, sections } : { version: MAPPING_VERSION, interval };
+  const hasSections = Object.keys(sections).length > 0;
+  const hasUnits = Object.keys(units).length > 0;
+  if (!interval && !hasSections && !hasUnits) return null;
+  return { version: MAPPING_VERSION, interval, ...(hasSections ? { sections } : {}), ...(hasUnits ? { units } : {}) };
 }
 
 /** Inverse of parseMapping (client → API). Returns "" when nothing is declared. */
-export function serializeMapping(interval: IntervalMapping | "", sections: Partial<Record<MappableSection, IntervalMapping | "">>): string {
-  const pairs = MAPPABLE_SECTIONS.filter((s) => sections[s]).map((s) => `${s}=${sections[s]}`);
+export function serializeMapping(
+  interval: IntervalMapping | "",
+  sections: Partial<Record<MappableSection, IntervalMapping | "">>,
+  units: Partial<Record<UnitKey, string>> = {}
+): string {
+  const pairs = [
+    ...MAPPABLE_SECTIONS.filter((s) => sections[s]).map((s) => `${s}=${sections[s]}`),
+    ...UNIT_KEY_LIST.filter((k) => units[k]).map((k) => `${k}=${units[k]}`),
+  ];
   if (!pairs.length) return interval;
   return [...(interval ? [`default=${interval}`] : []), ...pairs].join(";");
 }

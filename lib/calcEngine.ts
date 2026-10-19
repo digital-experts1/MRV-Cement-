@@ -41,8 +41,8 @@ export const CLINKER_EF_CONSTANT = "Selected clinker process EF";
 const REVIEW = "Default – review required";
 export const DEFAULT_CONSTANTS: SheetRow[] = [
   { "Constant / Factor": CLINKER_EF_CONSTANT,      Value: 0.5325, Unit: "tCO2/t clinker", "Source / rationale": "IPCC default for 65% CaO in clinker", "Used in": "08_Calculations", "Change control": "Controlled", Status: REVIEW, "Source URL": "https://www.ipcc-nggip.iges.or.jp/" },
-  { "Constant / Factor": "CaCO3 molar mass ratio", Value: 0.4397, Unit: "tCO2/t CaCO3",   "Source / rationale": "Stoichiometric 44.01/100.09",       "Used in": "04_Raw_Material_Input", "Change control": "Fixed chemistry", Status: "Fixed chemistry", "Source URL": "" },
-  { "Constant / Factor": "MgCO3 molar mass ratio", Value: 0.5220, Unit: "tCO2/t MgCO3",   "Source / rationale": "Stoichiometric 44.01/84.31",        "Used in": "04_Raw_Material_Input", "Change control": "Fixed chemistry", Status: "Fixed chemistry", "Source URL": "" },
+  { "Constant / Factor": "CaCO3 molar mass ratio", Value: 0.4397, Unit: "tCO2/t CaCO3",   "Source / rationale": "Stoichiometric 44.01/100.09 (molar masses rounded to 2 dp); reference only — the engine uses factor set STOICH-ROUNDED-MM/v1", "Used in": "04_Raw_Material_Input", "Change control": "Fixed chemistry", Status: "Fixed chemistry", "Source URL": "" },
+  { "Constant / Factor": "MgCO3 molar mass ratio", Value: 0.5220, Unit: "tCO2/t MgCO3",   "Source / rationale": "Stoichiometric 44.01/84.31 (molar masses rounded to 2 dp); reference only — the engine uses factor set STOICH-ROUNDED-MM/v1", "Used in": "04_Raw_Material_Input", "Change control": "Fixed chemistry", Status: "Fixed chemistry", "Source URL": "" },
   { "Constant / Factor": "Grid EF Egypt Q1 2025",  Value: 0.4878, Unit: "tCO2/MWh",       "Source / rationale": "Placeholder baseline – source document not yet attached", "Used in": "06_Electricity_Input", "Change control": "Annual/Controlled", Status: REVIEW, "Source URL": "" },
   ...([
     ["Clinker factor min QA", 0.25, "ratio"], ["Clinker factor max QA", 1.0, "ratio"],
@@ -54,9 +54,6 @@ export const DEFAULT_CONSTANTS: SheetRow[] = [
     "Constant / Factor": name, Value: value, Unit: unit, "Source / rationale": "Internal plausibility bound", "Used in": "09_QAQC_Checks", "Change control": "Controlled", Status: "Internal QA bound", "Source URL": "",
   })),
 ];
-
-const CACO3_RATIO = new Decimal("44.01").div("100.09");
-const MGCO3_RATIO = new Decimal("44.01").div("84.31");
 
 // ── Decimal helpers: any missing operand yields null (never zero). ──
 
@@ -128,6 +125,28 @@ export function calcProductionRow(row: SheetRow, issues: InputIssue[] = [], idx 
   return finishRow(row, d, ["Clinker Produced t", "Cement Produced t", "Clinker Used t"], status);
 }
 
+/**
+ * Carbonate factor set used by the engine (Directive 06B §3). Stoichiometric CO2/carbonate mass ratios computed from molar
+ * masses rounded to two decimals (CO2 44.01, CaCO3 100.09, MgCO3 84.31) — not "exact", and not a production methodology
+ * decision: selecting a factor set for production requires a documented technical basis.
+ */
+export const CARBONATE_FACTOR_SET = "STOICH-ROUNDED-MM/v1";
+const CACO3_RATIO = new Decimal("44.01").div("100.09");
+const MGCO3_RATIO = new Decimal("44.01").div("84.31");
+
+const unitOf = (row: SheetRow, col: string) => String(row[col] ?? "").trim().toLowerCase();
+
+/** Converts a share value under an explicit (or header) unit to a fraction; out-of-range values contradict the unit. */
+function toFraction(v: Dec, unit: string, field: string, row: SheetRow, idx: number, S: string, issues: InputIssue[]): Dec {
+  if (v === null) return null;
+  const max = unit === "fraction" ? 1 : 100;
+  if (v.lt(0) || v.gt(max)) {
+    issues.push({ section: S, row: rowRef(row, idx), field, raw: row[field], reason: `value contradicts its unit (${unit === "fraction" ? "declared fraction: 0–1" : unit === "percent" ? "declared percent: 0–100" : "column header %: 0–100"}); not converted` });
+    return null;
+  }
+  return unit === "fraction" ? v : v.div(100);
+}
+
 export function calcRawMaterialRow(row: SheetRow, issues: InputIssue[] = [], idx = 0): RowCalc {
   const S = "04_Raw_Material_Input";
   const f = (k: string) => readNum(row, k, S, idx, issues);
@@ -138,29 +157,49 @@ export function calcRawMaterialRow(row: SheetRow, issues: InputIssue[] = [], idx
     "Moisture %": f("Moisture %"),
     "Calcination Conversion": f("Calcination Conversion"),
   };
-  // The columns are percentages. A CaCO3 content in (0, 1] is not plausible as a percent for carbonate raw meal and is
-  // what a fraction (0.95 = 95 %) looks like; the row's unit convention is ambiguous, so neither carbonate value is used.
-  const ca = d["CaCO3 %"];
-  if (ca !== null && ca.gt(0) && ca.lte(1)) {
-    for (const field of ["CaCO3 %", "MgCO3 %"]) {
-      if (d[field] === null) continue;
-      issues.push({
-        section: S,
-        row: rowRef(row, idx),
-        field,
-        raw: row[field],
-        reason: "ambiguous unit: CaCO3 % is between 0 and 1, which looks like a fraction. Enter percentages (e.g. 95 for 95 %); the value was not converted",
-      });
-      d[field] = null;
-    }
+  // Original values stay in their source columns; conversions go to separate fields (unit mapping: lib/mrv/unitMapping.ts).
+  const carb = unitOf(row, "Carbonate Unit");
+  const moist = unitOf(row, "Moisture Unit");
+  const basis = unitOf(row, "Mass Basis");
+  for (const [col, val, allowed] of [["Carbonate Unit", carb, ["percent", "fraction"]], ["Moisture Unit", moist, ["percent", "fraction"]], ["Mass Basis", basis, ["dry", "wet"]]] as const) {
+    if (val && !(allowed as readonly string[]).includes(val)) issues.push({ section: S, row: rowRef(row, idx), field: col, raw: row[col], reason: `unrecognised unit "${val}"` });
   }
-  const pct = (v: Dec) => (v === null ? null : v.div(100));
-  d["CaCO3 CO2 t"] = mulAll(d["Quantity t"], pct(d["CaCO3 %"]), CACO3_RATIO, d["Calcination Conversion"]);
-  d["MgCO3 CO2 t"] = mulAll(d["Quantity t"], pct(d["MgCO3 %"]), MGCO3_RATIO, d["Calcination Conversion"]);
+  const carbUnit = carb === "percent" || carb === "fraction" ? carb : carb ? null : "header";
+  d["CaCO3 Fraction"] = carbUnit ? toFraction(d["CaCO3 %"], carbUnit, "CaCO3 %", row, idx, S, issues) : null;
+  d["MgCO3 Fraction"] = carbUnit ? toFraction(d["MgCO3 %"], carbUnit, "MgCO3 %", row, idx, S, issues) : null;
+  if (basis === "wet") {
+    const mUnit = moist === "percent" || moist === "fraction" ? moist : moist ? null : "header";
+    const m = mUnit ? toFraction(d["Moisture %"], mUnit, "Moisture %", row, idx, S, issues) : null;
+    d["Dry Quantity t"] = d["Quantity t"] === null || m === null ? null : d["Quantity t"].mul(new Decimal(1).minus(m));
+  } else if (basis === "dry") {
+    d["Dry Quantity t"] = d["Quantity t"];
+  } else {
+    // Undeclared mass basis: the quantity is used as entered (moisture not deducted) and QA check CP-03 flags it.
+    d["Dry Quantity t"] = basis ? null : d["Quantity t"];
+  }
+  d["CaCO3 CO2 t"] = mulAll(d["Dry Quantity t"], d["CaCO3 Fraction"], CACO3_RATIO, d["Calcination Conversion"]);
+  d["MgCO3 CO2 t"] = mulAll(d["Dry Quantity t"], d["MgCO3 Fraction"], MGCO3_RATIO, d["Calcination Conversion"]);
   d["Process CO2 Method A t"] = add(d["CaCO3 CO2 t"], d["MgCO3 CO2 t"]);
   const co2 = d["Process CO2 Method A t"];
   const status = co2 !== null && co2.gt(0) ? "PASS" : "WARNING";
-  return finishRow(row, d, ["Quantity t", "CaCO3 %", "MgCO3 %", "Calcination Conversion"], status);
+  const calc = finishRow(row, d, ["Quantity t", "CaCO3 %", "MgCO3 %", "Calcination Conversion", "CaCO3 Fraction", "MgCO3 Fraction", "Dry Quantity t"], status);
+  calc.row["Carbonate Unit Basis"] = carbUnit === "header" ? "column header (%), undeclared" : carbUnit ?? "unrecognised";
+  calc.row["Mass Basis Applied"] = basis || "undeclared (quantity as entered)";
+  calc.row["Carbonate Factor Set"] = CARBONATE_FACTOR_SET;
+  return calc;
+}
+
+/**
+ * Source-unit semantics of the raw-material section. `contradiction`: no row declares its carbonate unit, yet every CaCO3
+ * value is ≤ 1 — the "%" header and the values disagree (fractions written under a percent header). Method A is then
+ * not calculated until a unit is declared. A single small value (e.g. 0.5 % in a clay row) is not a contradiction.
+ */
+export function carbonateSemantics(rows: SheetRow[]) {
+  const undeclaredCarb = rows.filter((r) => !unitOf(r, "Carbonate Unit"));
+  const undeclaredBasis = rows.filter((r) => !unitOf(r, "Mass Basis"));
+  const cas = undeclaredCarb.map((r) => parseStrictNumber(r["CaCO3 %"])).filter((p) => p.kind === "ok").map((p) => (p as { value: Decimal }).value);
+  const contradiction = undeclaredCarb.length === rows.length && cas.length > 0 && cas.every((v) => v.lte(1));
+  return { rows: rows.length, undeclaredCarbonate: undeclaredCarb.length, undeclaredMassBasis: undeclaredBasis.length, contradiction };
 }
 
 export function isAlternativeFuel(fuelType: unknown, biomass: Dec): boolean {
@@ -290,7 +329,8 @@ function aggregate(input: MrvInput, production: RowCalc[], rawMaterial: RowCalc[
   const clinkerProduced = col(production, "Clinker Produced t");
   const cementProduced = col(production, "Cement Produced t");
   const clinkerUsed = col(production, "Clinker Used t");
-  const processCO2MethodA = col(rawMaterial, "Process CO2 Method A t");
+  // Contradictory, undocumented carbonate units → Method A not calculated (never rescaled by guessing).
+  const processCO2MethodA = carbonateSemantics(input.rawMaterial).contradiction ? null : col(rawMaterial, "Process CO2 Method A t");
 
   const efIdx = input.constants.findIndex((r) => r["Constant / Factor"] === CLINKER_EF_CONSTANT);
   const clinkerProcessEF = efIdx >= 0 ? readNum(input.constants[efIdx], "Value", "07_Constants_EF_NCV", efIdx, issues) : null;
@@ -375,7 +415,7 @@ export function calculateStore(inputLike: InputLike, fallbackOrigin: DataOrigin 
     { Metric: "Cement Produced", "Formula / Link": "Σ 03_Production_Input[Cement Produced t]", Value: v(agg.cementProduced), Unit: "t", "Governance note": "Selected period cement output", "QA Source": "Production_Input" },
     { Metric: "Clinker Used in Cement", "Formula / Link": "Σ 03_Production_Input[Clinker Used t]", Value: v(agg.clinkerUsed), Unit: "t", "Governance note": "Used for clinker factor", "QA Source": "Production_Input" },
     { Metric: "Clinker Factor", "Formula / Link": "Clinker Used ÷ Cement Produced", Value: v(agg.clinkerFactor), Unit: "ratio", "Governance note": "Clinker content divided by cement production", "QA Source": "Production_Input" },
-    { Metric: "Process CO2 Method A", "Formula / Link": "Σ Qty × (CaCO3% × 44.01/100.09 + MgCO3% × 44.01/84.31) × conversion", Value: v(agg.processCO2MethodA), Unit: "tCO2", "Governance note": "Input-based carbonate pathway", "QA Source": "Raw_Material_Input" },
+    { Metric: "Process CO2 Method A", "Formula / Link": "Σ dry Qty × (CaCO3 fraction × 44.01/100.09 + MgCO3 fraction × 44.01/84.31) × conversion", Value: v(agg.processCO2MethodA), Unit: "tCO2", "Governance note": `Input-based carbonate pathway; factor set ${CARBONATE_FACTOR_SET} (ratios from rounded molar masses); units per declared source-unit mapping`, "QA Source": "Raw_Material_Input" },
     { Metric: "Process CO2 Method B", "Formula / Link": `Clinker Produced × ${CLINKER_EF_CONSTANT}`, Value: v(agg.processCO2MethodB), Unit: "tCO2", "Governance note": "Output-based clinker pathway", "QA Source": "Constants" },
     { Metric: "Selected Process CO2", "Formula / Link": "Method selected in Setup (no default)", Value: v(agg.selectedProcessCO2), Unit: "tCO2", "Governance note": `Method: ${methodLabel ?? "not selected"}`, "QA Source": "Setup" },
     { Metric: "Fuel Combustion CO2", "Formula / Link": "Σ Energy TJ × EF × Ox × (1 − biomass)", Value: v(agg.fuelCombustionCO2), Unit: "tCO2", "Governance note": "Fossil combustion only", "QA Source": "Kiln_Fuel_Input" },

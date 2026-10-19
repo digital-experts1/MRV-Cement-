@@ -1,89 +1,90 @@
-# 12 — Directive 06: trusted execution, explicit intervals, Q1 2025 reconciliation
+# 12 — Directive 06 / 06B: trusted execution, explicit intervals and units, Q1 2025 reconciliation
 
-Status legend: **Implemented** (code exists) · **Tested** (automated test executed and passed) · **Not verified** (no hosted evidence).
+Evidence classes used below (never merged):
+**W** = test written · **D** = executed through a development endpoint (same case modules, in the running dev server) ·
+**R** = executed by the Vitest runner · **H** = hosted end-to-end (real Supabase Auth/PostgREST/Storage).
+PGlite results are **D**, real PostgreSQL semantics with a stand-in auth/storage schema — **not** hosted verification.
 
-## 1. Environment and blockers
-- The connected Supabase project is classified **"production or unsure"**. Migration `db/supabase/0003_mrv_trusted_execution.sql`
-  is **local only, not applied**. No remote schema change, test user or test data was created in Directive 06.
-- Without 0003 the hosted app reports a clear "migration not applied / executor not configured" error for calculation and import
-  writes. A signed-in, hosted Supabase workflow (Auth → import → run → report) has **not** been demonstrated.
-- To finish: provide a confirmed non-production project, apply 0003, set the executor key server-side, re-run
-  `db/supabase/tests/rls_persistence_check.sql` (updated for 0003) and the signed-in workflow.
+## 1. Environment (06B §1) — BLOCKED
+- The configured Supabase project is classified **"production or unsure"** (unchanged). No other project is configured,
+  and no staging designation exists in configuration. **Required from the owner:** the project ref of a confirmed
+  non-production staging project, explicitly authorised for migrations and synthetic test logins.
+- Migration `db/supabase/0003_mrv_trusted_execution.sql` is **local only, not applied anywhere hosted**. No remote schema
+  change, secret, user or data was created. Production behaviour and data are unchanged.
+- Once authorised: inspect schema/migration history → apply 0001–0003 in order (additive) → copy the provisioned key
+  (`select key_id, encode(secret,'hex') from mrv_private.executor_key where active`) into the server environment as
+  `MRV_EXECUTOR_KEY_ID` / `MRV_EXECUTOR_KEY` (never printed or committed) → run `tests/hosted/stagingE2E.test.ts`.
+- `db/supabase/tests/rls_persistence_check.sql` predates 0003 (calls retired RPCs) and must not be used as 0003 evidence.
 
-## 2. Interval rules (Implemented, Tested)
-| Rule | Where | Test |
+## 2. Trusted executor (06B §2)
+Signature protocol `trace-mrv-exec/v2` (`lib/mrv/executorSign.ts` ⇄ `mrv_private.verify_executor`): HMAC-SHA256 over
+operation · key id · actor (= `auth.uid()` of the calling JWT) · tenant · facility · issued_at · random nonce ·
+SHA-256 of the complete body. Valid 120 s, ≤ 30 s future skew; nonce consumed once. Every RPC re-checks
+`has_permission` at execution time; `mrv_finalize_run` independently verifies pinned readings, considered set,
+configuration versions, input snapshot and synthetic labelling, and derives QA rows/overall from the results.
+Idempotency: imports by batch id; runs by dependency + engine + input hash, evaluated **after** all integrity checks
+(a defect where the shortcut ran first was found by the harness and fixed in this directive).
+
+**Residual trust boundary:** the database does not recompute emissions; it trusts results signed with the server-only
+executor key. Forged results without that key are rejected; anyone holding the key could sign arbitrary results.
+
+| Requirement | PGlite (D) | Hosted (H) |
 |---|---|---|
-| Interval from row columns, or an explicit mapping; never from "last day of month" | `lib/mrv/importMapping.ts` | HS-01, HS-02 |
-| Mapping declared for the whole file **or per sheet**; undeclared sheets are rejected | `parseMapping`, `MappingSelect` | HS-05 |
-| `calendar_quarter_of_date` for quarter-total rows dated inside the quarter | `impliedByMapping` | HS-05 |
-| A quarter total is never attributed to one month (excluded from a March-only range) | `selectForRange` | HS-05, RS-01 |
-| Same-series overlaps in one import are errors; non-nesting stored overlaps are conflicts | `readings.ts`, `rangeSelection.ts` | HS-03, RS-03 |
-| Finer vs coarser totals are reconciled; disagreement blocks completeness | `rangeSelection.ts` | RS-02 |
-| Day-level, per-meter coverage | `computeCoverage` | RS-04 |
-| Carbonate content in (0, 1] under a "%" header is rejected as ambiguous (not rescaled) | `calcRawMaterialRow` | EN-01 |
+| Retired `mrv_record_run` / `mrv_record_import` denied | PASS | W, not run |
+| Unsigned / forged-key / altered payload / fake QA PASS rejected; no run persisted | PASS | W, not run |
+| Expired, future-dated, nonce-less, replayed signature rejected | PASS | W (expired, replay) |
+| Cross-facility and cross-operation signature rejected | PASS | W (cross-facility) |
+| Other user / cross-tenant with a valid signature rejected | PASS | W |
+| Revoked user rejected at execution time | PASS | W (needs operator-revoked login) |
+| Legitimate server calculation succeeds; import and run retries idempotent | PASS | W |
+| Concurrent import invalidates an in-flight run (40001) | PASS | — |
 
-Engine version bumped to `trace-mrv-engine/2026.10-d06.1` (stored runs keep their own version and results).
+## 3. Unit handling (06B §3)
+- `lib/mrv/unitMapping.ts` (`trace-source-units/v1`): importer declares `carbonate`/`moisture` = percent|fraction and
+  `massBasis` = dry|wet (UI: *Raw-material units* in the import mapping), or rows carry `Carbonate Unit` / `Moisture Unit` /
+  `Mass Basis`. Stamped on each raw-material reading with the mapping version; source values never changed; converted
+  values in separate fields (`CaCO3 Fraction`, `MgCO3 Fraction`, `Dry Quantity t`). Row vs import contradiction = error.
+- 0.5 declared or read as percent is 0.5 % (valid). A value outside its declared unit's range is flagged and not converted.
+- Undeclared units: header (%) applies, quantity used as entered; if **every** CaCO3 value is ≤ 1 the semantics are
+  contradictory → Method A not calculated. QA **CP-03** (only when Method A is selected): FAIL / WARNING / PASS.
+- Engine factor set `STOICH-ROUNDED-MM/v1` (ratios of molar masses rounded to 2 dp — not "exact"). Not changed to match
+  the workbook. Production methodology selection requires a documented technical basis.
+- Engine version `trace-mrv-engine/2026.10-d06b.1`; stored runs keep their version and results.
 
-## 3. Q1 2025 materials — what they are
-| File | Nature | Use |
-|---|---|---|
-| `TRACE_FORCE_MRV_Cement_QAQC_V28_Collection_Workbook_v0_2.xlsx` | Workbook mode **`Cement_QAQC_V28_Demo`**, site "Demo Cement Plant - Egypt", factors marked "Demo" | Reconciliation input |
-| `TRACE_FORCE_MRV_Internal_Report_Q1_2025_2026-10-19.pdf` | Report generated **by this application** | Cross-check of application output only — not an independent audit |
-| `TRACE_FORCE_Universal_Cement_MRV_Standard_v1_0.xlsx` | Methodology/data-standard template (no plant values used) | Reference |
+## 4. Q1 2025 demo workbook (DEMO-labelled — not real plant data)
+Test assumptions **pending owner confirmation**: Q1-A1 fuel rows are Q1 totals; Q1-A2 carbonate values are fractions;
+Q1-A3 quantities are dry basis. Factor scenarios kept separate: `WORKBOOK-REPRO/Q1-DEMO/v1` (0.44 / 0.522) and
+`STOICH-ROUNDED-MM/v1`.
 
-**Consequence:** the Q1 run below is a reconciliation against a demo workbook. It is **not** a validation against real plant
-records, and no claim of real-Q1 accuracy, verification or compliance is made.
-
-## 4. Declared mapping for this workbook
-`default=calendar_month_of_date;kilnFuel=calendar_quarter_of_date` — taken from the workbook's own documentation:
-03/04/06 rows are "Demo monthly row"s (Jan/Feb/Mar); all 05 fuel rows are dated 2025-03-31 but carry quarter evidence IDs
-(`EV-FUEL-*-Q1`) and represent Q1 totals. With a single monthly mapping the fuel would have been attributed to March only.
-**Owner confirmation required** that the fuel rows are Q1 totals.
-
-## 5. Discrepancy register (Tested: `tests/q1Reconciliation.test.ts`, dev `GET /api/dev/q1-inspect`)
-Reference = `tests/reference/reference.ts` on rows read directly with SheetJS (no parser/engine import). Application = real import path
-(parse → readings with the mapping above → range selection → rebuild → `calculateStore`). Tolerance: relative 1e-9.
-
-| Metric | Workbook (cached) | Reference | Application | Status |
+| Metric | Workbook | Reference | Application | Status |
 |---|---|---|---|---|
-| Clinker produced (t) | 520,000 | 520,000 | 520,000 | within tolerance |
-| Cement produced (t) | 680,000 | 680,000 | 680,000 | within tolerance |
-| Clinker factor | 0.765 | 0.765 | 0.765 | within tolerance |
-| Process CO2 Method B (selected) | 276,900 | 276,900 | 276,900 | within tolerance |
-| Fuel combustion CO2 | 187,378.05592 | 187,378.05592 | 187,378.05592 | within tolerance |
-| Biogenic CO2 memo | 8,278.32068 | 8,278.32068 | 8,278.32068 | within tolerance |
-| Direct embedded CO2 | 464,278.05592 | 464,278.05592 | 464,278.05592 | within tolerance |
-| Grid electricity (MWh) | 95,000 | 95,000 | 95,000 | within tolerance |
-| Indirect grid CO2 | 46,341 | 46,341 | 46,341 | within tolerance |
-| Total embedded CO2 | 510,619.05592 | 510,619.05592 | 510,619.05592 | within tolerance |
-| SEE clinker (tCO2/t) | 0.892842415 | 0.892842415 | 0.892842415 | within tolerance |
-| SEE cement (tCO2/t) | 0.750910376 | 0.750910376 | 0.750910376 | within tolerance |
-| Total fuel energy (GJ) | 2,074,380 | 2,074,380 | 2,074,380 | within tolerance |
-| Specific heat (GJ/t clinker) | 3.989192308 | 3.989192308 | 3.989192308 | within tolerance |
-| TSR (%) | 11.81 (hard-typed, rounded) | 11.80979377 | 11.80979377 | within tolerance (workbook value is rounded) |
-| Clinker stockpile delta (t) | −200 | −200 | −200 | within tolerance |
-| Process CO2 Method A | 347,036.4 | not calculated | not calculated | **not comparable** — see D-1 |
-| Stock movement closing difference | — | — | — | **not comparable** — no inventory evidence (MB-04 NOT_EVALUATED) |
-| Product allocation per cement type | — | — | — | **not comparable** — single product; no approved allocation method |
+| Method B, fuel, biogenic, direct, grid, total, SEE, SHC, TSR, clinker factor, production | as in D06 | = | = | within relative 1e-9 (all 17 comparable rows) |
+| Method A, units undeclared | 347,036.4 | not calculated | not calculated | not comparable (contradictory semantics) |
+| Method A, units declared (Q1-A2/A3), engine factors | 347,036.4 | 346,808.867397 | 346,808.867397 | ref = app within 1e-9; **−227.53 t (−0.066 %) vs workbook**, explained by factor set, not resolved |
+| Method A, workbook-reproduction factors | 347,036.4 | 347,036.4 | — | reproduces workbook formula only |
+| Stock movement / inventory reconciliation | — | — | — | **unvalidated** — no inventory evidence (MB-04 NOT_EVALUATED) |
+| Product allocation per cement type | — | — | — | **unvalidated** — no approved allocation methodology |
 
-The application PDF matches the application column.
+Method A is not the selected method in the workbook, so totals are unaffected. "No discrepancies" applies only to the
+comparable rows above under the stated assumptions.
 
-## 6. Open findings
-- **D-1 Carbonate units (open, owner decision).** 04 headers say `CaCO3 %`/`MgCO3 %`, values are fractions (0.95, 0.02), and the
-  workbook formula treats them as fractions with factors 0.44/0.522 → 347,036.4 t. With stoichiometric ratios (44.01/100.09,
-  44.01/84.31) the same fractions give 346,808.867 t (−0.066 %). The application now rejects such rows as ambiguous (six input
-  issues) instead of silently dividing by 100 (which would have understated Method A 100×). Method A is not selected, so totals
-  are unaffected, but the dataset is "not ready" until the unit is corrected (enter percent) or a fraction column is approved.
-- **D-2 QA status.** Workbook `08_Calculations!C21` says PASS; the application says INCOMPLETE because MB-04 cannot be evaluated
-  without inventory movements (missing is never PASS). Not an error in either formula; a policy difference.
-- **D-3 Workbook formula defects.** `08_Calculations` B31/B33/B34 contain broken formulas (Excel error code 29, `#NAME?`) and
-  the C values next to them (−200, 2,074,380, 244,980, 11.81) are typed, not computed. The application does not read them.
-- **D-4 Fuel period.** Depends on owner confirmation of §4.
-- **D-5 Evidence.** 15/15 evidence references are "Mapped" (linked only). No original invoices, lab sheets or meter reads were
-  supplied, so no source value could be traced to an original document.
+## 5. Signed-in application workflow (06B §4) — BLOCKED
+Login → factory → upload → mapping → readings → server calculation → QA → saved run → draft report, plus reload/restart,
+duplicate and corrected imports, invalid import, factory switching, cross-tenant/restricted factory, private download,
+and January/Q1/full-year/custom ranges, have **not** been demonstrated on hosted infrastructure (no staging project).
+Covered locally only at DB/logic level (D): duplicate/correction/invalid import, cross-tenant/factory, storage paths,
+January/Q1/custom ranges, quarter fuel not attributed to March, incomplete coverage visible.
 
-## 7. Test evidence (executed in this environment)
-- Pure suite (`tests/mrv/cases.ts` + acceptance) via dev self-test: **34/34 passed** after these changes (adds HS-05, EN-01;
-  RF-01 now also covers totals, SEE and TSR on the synthetic fixture).
-- Q1 reconciliation: no discrepancies; three documented not-comparable rows.
-- PGlite migration/RPC/isolation harness: 40/40 and 18/18 previously; not re-run against hosted Supabase.
+## 6. Test execution record (this environment)
+| Suite | W | D | R | H |
+|---|---|---|---|---|
+| Pure cases + acceptance (`tests/mrv/cases.ts`, acceptance) | yes | **35/35** (`/api/dev/mrv-selftest`) | not run | — |
+| PGlite DB harness (`tests/mrv/dbHarness.ts`) | yes | **47/47** (`/api/dev/mrv-db-selftest`) | not run | — |
+| Isolation (`tests/isolation/cases.ts`) | yes | **18/18, 130 checks** (`/api/dev/isolation`) | not run | — |
+| Synthetic reference register | yes | 0 discrepancies, 1 not comparable | not run | — |
+| Q1 reconciliation (`tests/q1Reconciliation.test.ts`) | yes | module output checked via `/api/dev/q1-inspect` | **not run** | — |
+| Hosted staging (`tests/hosted/stagingE2E.test.ts`) | yes | — | skipped (guards) | **not run** |
+| TypeScript | — | — | `tsc` clean | — |
+| Production build (`next build`) | — | — | passed | — |
+
+The Vitest runner (`npm test`) could not be invoked from this environment; R must be produced by running `npm test`.

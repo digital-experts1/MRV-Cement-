@@ -7,8 +7,10 @@
  * (tests/reference/q1.ts). That workbook is itself labelled DEMO ("Cement_QAQC_V28_Demo", "Demo Cement Plant"), so the
  * Q1 register is a reconciliation against a demo workbook — not a validation against real plant records.
  *
- * Unit rule (same as the column headers): "CaCO3 %" / "MgCO3 %" are percentages. A CaCO3 value in (0, 1] is a fraction
- * written under a percent header; the reference refuses to pick a convention and returns null (not comparable).
+ * Unit rule (Directive 06B §3): units come only from an explicit declaration (`units`), mirroring lib/mrv/unitMapping.ts.
+ * Undeclared: the "%" header applies, unless every CaCO3 value is ≤ 1 — then header and values contradict each other and
+ * Method A is not comparable (null). A single small value such as 0.5 % is valid. Mass basis: "wet" deducts moisture;
+ * "dry" or undeclared uses the quantity as entered.
  */
 import Decimal from "decimal.js";
 
@@ -21,6 +23,7 @@ export interface ReferenceInput {
   electricity: Row[];
   inventory: Row[];
   constants: Row[];
+  units?: { carbonate?: "percent" | "fraction"; moisture?: "percent" | "fraction"; massBasis?: "dry" | "wet" };
 }
 
 export interface RegisterRow {
@@ -61,13 +64,17 @@ export function referenceMetrics(inp: ReferenceInput) {
   const clinker = sum(inp.production, (r) => d(r["Clinker Produced t"]));
   const cement = sum(inp.production, (r) => d(r["Cement Produced t"]));
   const used = sum(inp.production, (r) => d(r["Clinker Used t"]));
-  const methodA = sum(inp.rawMaterial, (r) => {
-    const q = d(r["Quantity t"]);
-    const ca = d(r["CaCO3 %"]);
-    const mg = d(r["MgCO3 %"]);
+  const carbUnit = inp.units?.carbonate;
+  const contradictory = !carbUnit && inp.rawMaterial.length > 0 && inp.rawMaterial.every((r) => { const ca = d(r["CaCO3 %"]); return ca !== null && ca.lte(1); });
+  const share = (v: Decimal | null, unit: "percent" | "fraction" | undefined) => (v === null ? null : unit === "fraction" ? v : v.div(100));
+  const methodA = contradictory ? null : sum(inp.rawMaterial, (r) => {
+    const q0 = d(r["Quantity t"]);
+    const moist = share(d(r["Moisture %"]), inp.units?.moisture);
+    const q = inp.units?.massBasis === "wet" ? (q0 && moist ? q0.mul(new Decimal(1).minus(moist)) : null) : q0;
+    const ca = share(d(r["CaCO3 %"]), carbUnit);
+    const mg = share(d(r["MgCO3 %"]), carbUnit);
     const conv = d(r["Calcination Conversion"]);
-    if (ca && ca.gt(0) && ca.lte(1)) return null; // ambiguous unit — see header
-    return q && ca && mg && conv ? q.mul(ca.div(100).mul(caco3).plus(mg.div(100).mul(mgco3))).mul(conv) : null;
+    return q && ca && mg && conv ? q.mul(ca.mul(caco3).plus(mg.mul(mgco3))).mul(conv) : null;
   });
   const efRow = inp.constants.find((r) => r["Constant / Factor"] === "Selected clinker process EF");
   const methodB = mul(clinker, d(efRow?.Value));
@@ -134,7 +141,7 @@ const META: Record<string, { unit: string; formula: string; source: string }> = 
   "Specific Embedded Emissions Cement": { unit: "tCO2/t cement", formula: "total ÷ cement produced", source: "derived" },
   "Total Fuel Energy": { unit: "GJ", formula: "Σ Qty × NCV", source: "05_Kiln_Fuel_Input rows" },
   "Thermal Substitution Rate (TSR)": { unit: "%", formula: "alt-fuel energy ÷ total fuel energy × 100 (alt = biomass > 0 or RDF/tyre/waste by name)", source: "05_Kiln_Fuel_Input rows" },
-  "Process CO2 Method A": { unit: "tCO2", formula: "Σ Qty × (CaCO3%/100 × 44.01/100.09 + MgCO3%/100 × 44.01/84.31) × conversion", source: "04_Raw_Material_Input rows" },
+  "Process CO2 Method A": { unit: "tCO2", formula: "Σ Qty(dry basis) × (CaCO3 fraction × 44.01/100.09 + MgCO3 fraction × 44.01/84.31) × conversion (units as declared)", source: "04_Raw_Material_Input rows" },
   "Process CO2 Method B": { unit: "tCO2", formula: "Σ clinker produced × selected clinker EF", source: "03_Production_Input; 07_Constants" },
   "Selected Process CO2": { unit: "tCO2", formula: "Method selected in Setup", source: "01_Setup" },
   "Fuel Combustion CO2": { unit: "tCO2", formula: "Σ Qty × NCV / 1000 × EF × Ox × (1 − biomass)", source: "05_Kiln_Fuel_Input rows" },

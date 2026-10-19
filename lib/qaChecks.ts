@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import type { Dec, EngineContext, RowCalc } from "./calcEngine";
+import { carbonateSemantics, type Dec, type EngineContext, type RowCalc } from "./calcEngine";
 import { toIsoDate } from "./dates";
 import type { CheckStatus, RowSource, SheetRow } from "./types";
 
@@ -191,6 +191,16 @@ export function runQaChecks(ctx: EngineContext): SheetRow[] {
   const cp02: CheckDef = { id: "CP-02", category: "Completeness", name: "Method selection valid", rule: "Method A or B explicitly selected in Setup", severity: "Fail", owner: "Sustainability" };
   const method = String(ctx.input.setup["Selected calcination method"] ?? "");
   checks.push(check(cp02, ctx.method ? "PASS" : "FAIL", method || "not selected", ctx.method ? `Method ${ctx.method} selected` : "No calcination method selected (no default applied)"));
+
+  // Source-unit semantics only matter when the carbonate (Method A) pathway is the selected one.
+  if (ctx.method === "A" && ctx.input.rawMaterial.length > 0) {
+    const cp03: CheckDef = { id: "CP-03", category: "Completeness", name: "Raw-material unit semantics declared", rule: "Carbonate unit (percent/fraction) and mass basis (dry/wet) declared for every raw-material row", severity: "Fail", owner: "Sustainability" };
+    const sem = carbonateSemantics(ctx.input.rawMaterial);
+    const result = `${sem.undeclaredCarbonate} carbonate / ${sem.undeclaredMassBasis} mass basis undeclared of ${sem.rows}`;
+    if (sem.contradiction) checks.push(check(cp03, "FAIL", result, "CaCO3 values are all ≤ 1 under a % header with no declared unit (contradictory source semantics); Method A not calculated until the unit is declared"));
+    else if (sem.undeclaredCarbonate + sem.undeclaredMassBasis > 0) checks.push(check(cp03, "WARNING", result, "Undeclared rows use the column-header unit (%) and the quantity as entered (moisture not deducted); declare units in the import mapping"));
+    else checks.push(check(cp03, "PASS", result, "Units declared explicitly on every row"));
+  }
 
   return checks;
 }

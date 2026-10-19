@@ -28,6 +28,30 @@ export const Q1_FILE = "TRACE_FORCE_MRV_Cement_QAQC_V28_Collection_Workbook_v0_2
  */
 export const Q1_MAPPING = "default=calendar_month_of_date;kilnFuel=calendar_quarter_of_date";
 
+/**
+ * TEST ASSUMPTIONS pending owner confirmation (Directive 06B §3) — not facts about the source:
+ *  - Q1-A1 fuel aggregation: the 05 rows dated 31 March are Q1 totals (quarter evidence IDs), not March totals.
+ *  - Q1-A2 carbonate unit: values under "CaCO3 %"/"MgCO3 %" are fractions (0.95 = 95 %), as the workbook formula uses them.
+ *  - Q1-A3 mass basis: quantities are used as entered (dry basis declared), as the workbook formula does not deduct moisture.
+ */
+export const Q1_ASSUMPTIONS = [
+  { id: "Q1-A1", subject: "Fuel aggregation", assumption: "05_Kiln_Fuel_Input rows are calendar-Q1 totals", status: "pending owner confirmation" },
+  { id: "Q1-A2", subject: "Carbonate unit", assumption: "CaCO3/MgCO3 values are fractions despite the % header", status: "pending owner confirmation" },
+  { id: "Q1-A3", subject: "Raw-material mass basis", assumption: "Quantity is dry mass (no moisture deduction)", status: "pending owner confirmation" },
+] as const;
+export const Q1_UNITS_DECLARED = ";carbonate=fraction;massBasis=dry";
+
+/**
+ * Named, versioned carbonate factor scenarios — kept separate, never mixed:
+ *  - WORKBOOK-REPRO/Q1-DEMO/v1: the workbook's own factors (0.44, 0.522) — only to reproduce its cached value;
+ *  - STOICH-ROUNDED-MM/v1: the engine's factor set (ratios of molar masses rounded to 2 dp; not "exact").
+ * Neither is a production methodology selection; that requires a documented technical basis.
+ */
+export const FACTOR_SCENARIOS = {
+  "WORKBOOK-REPRO/Q1-DEMO/v1": { caco3: "0.44", mgco3: "0.522", basis: "07_Constants of the DEMO workbook" },
+  "STOICH-ROUNDED-MM/v1": { caco3: new Decimal("44.01").div("100.09").toString(), mgco3: new Decimal("44.01").div("84.31").toString(), basis: "CO2 44.01 / CaCO3 100.09 / MgCO3 84.31 (2 dp)" },
+} as const;
+
 const rows = (wb: XLSX.WorkBook, sheet: string) => XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheet], { range: 2, defval: null });
 
 export function q1Reconciliation() {
@@ -49,24 +73,33 @@ export function q1Reconciliation() {
     constants: rows(wb, "07_Constants_EF_NCV").filter((r) => r["Constant / Factor"]),
   };
 
-  // Application path.
+  // Application path (real import path), once without and once with the declared unit assumptions.
   const parsed = parseWorkbook(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, Q1_FILE);
-  const drafts = toReadingDrafts(parsed.inputs, parseMapping(Q1_MAPPING), Q1_FILE);
-  const stored: StoredReading[] = drafts.readings.map((d, i) => ({ ...d, id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}` }));
-  const sel = selectForRange(stored, "2025-01-01", "2025-03-31");
   const cfg = Object.fromEntries(toConfigDrafts(parsed.inputs).map((d) => [d.kind, d.content]));
-  const input = scopeInputToRange(rebuildInput(sel.included, cfg, parsed.inputs.meta), { start: "2025-01-01", end: "2025-03-31", label: "Calendar Q1 2025" });
-  const store = calculateStore(input, "workbook");
-  const app: Record<string, number | null> = {};
-  for (const r of store.calcRows) app[String(r.Metric)] = typeof r.Value === "number" ? r.Value : null;
+  const runApp = (mapping: string) => {
+    const drafts = toReadingDrafts(parsed.inputs, parseMapping(mapping), Q1_FILE);
+    const stored: StoredReading[] = drafts.readings.map((d, i) => ({ ...d, id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}` }));
+    const sel = selectForRange(stored, "2025-01-01", "2025-03-31");
+    const input = scopeInputToRange(rebuildInput(sel.included, cfg, parsed.inputs.meta), { start: "2025-01-01", end: "2025-03-31", label: "Calendar Q1 2025" });
+    const store = calculateStore(input, "workbook");
+    const app: Record<string, number | null> = {};
+    for (const r of store.calcRows) app[String(r.Metric)] = typeof r.Value === "number" ? r.Value : null;
+    return { drafts, sel, store, app };
+  };
+  const undeclared = runApp(Q1_MAPPING);
+  const declared = runApp(Q1_MAPPING + Q1_UNITS_DECLARED);
+  const { drafts, sel, store } = undeclared;
+  const withWorkbook = (rowsIn: ReturnType<typeof discrepancyRegister>) =>
+    rowsIn.map((r) => {
+      const w = workbook[r.metric];
+      return { ...r, workbook: typeof w === "number" ? new Decimal(w).toSignificantDigits(15).toString() : (w ?? null) };
+    });
+  const register = withWorkbook(discrepancyRegister(ref, undeclared.app));
+  const registerDeclared = withWorkbook(discrepancyRegister({ ...ref, units: { carbonate: "fraction", massBasis: "dry" } }, declared.app));
 
-  const register = discrepancyRegister(ref, app).map((r) => {
-    const w = workbook[r.metric];
-    return { ...r, workbook: typeof w === "number" ? new Decimal(w).toSignificantDigits(15).toString() : (w ?? null) };
-  });
-
-  // Method A as the workbook computes it (fractions × its 0.44 / 0.522 factors) vs stoichiometric ratios — for the unit note.
-  const fractionA = (caF: string, mgF: string) =>
+  // Method A in the workbook's formula form (Σ Qty × (CaCO3 × f1 + MgCO3 × f2); fractions per Q1-A2, as-entered mass per Q1-A3)
+  // under each named factor scenario. The engine additionally applies the row's Calcination Conversion (see registerDeclared).
+  const scenarioA = (caF: string, mgF: string) =>
     ref.rawMaterial.reduce((acc, r) => acc.plus(new Decimal(Number(r["Quantity t"])).mul(new Decimal(Number(r["CaCO3 %"])).mul(caF).plus(new Decimal(Number(r["MgCO3 %"])).mul(mgF)))), new Decimal(0));
 
   return {
@@ -79,10 +112,15 @@ export function q1Reconciliation() {
     inputIssues: store.inputIssues,
     qa: store.qaqc.map((q) => ({ id: q["Check ID"], status: q.Status, result: q.Result })),
     register,
-    methodANote: {
+    registerDeclared,
+    declaredRawRows: declared.store.rawMaterial.map((r) => ({ unit: r["Carbonate Unit"], basis: r["Mass Basis"], version: r["Unit Mapping Version"], caSource: r["CaCO3 %"], caFraction: r["CaCO3 Fraction"] })),
+    declaredInputIssues: declared.store.inputIssues,
+    assumptions: Q1_ASSUMPTIONS,
+    methodAScenarios: {
       workbookCached: workbook["Process CO2 Method A"] ?? null,
-      asFractionWithWorkbookFactors: fractionA("0.44", "0.522").toString(),
-      asFractionWithStoichiometricRatios: fractionA(new Decimal("44.01").div("100.09").toString(), new Decimal("44.01").div("84.31").toString()).toSignificantDigits(12).toString(),
+      "WORKBOOK-REPRO/Q1-DEMO/v1": scenarioA(FACTOR_SCENARIOS["WORKBOOK-REPRO/Q1-DEMO/v1"].caco3, FACTOR_SCENARIOS["WORKBOOK-REPRO/Q1-DEMO/v1"].mgco3).toString(),
+      "STOICH-ROUNDED-MM/v1": scenarioA(FACTOR_SCENARIOS["STOICH-ROUNDED-MM/v1"].caco3, FACTOR_SCENARIOS["STOICH-ROUNDED-MM/v1"].mgco3).toSignificantDigits(12).toString(),
+      applicationDeclared: declared.app["Process CO2 Method A"],
     },
   };
 }

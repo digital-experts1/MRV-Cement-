@@ -202,7 +202,7 @@ export const MRV_CASES: MrvCase[] = [
   },
   {
     id: "EN-01",
-    name: "Carbonate content written as a fraction under a '%' header is rejected as ambiguous, never rescaled",
+    name: "Fractions under a '%' header with no declared unit are contradictory: Method A not calculated (CP-03 FAIL), never rescaled",
     run: () => {
       const ds = createSampleDataset();
       ds.setup["Selected calcination method"] = "Method A - raw material input";
@@ -210,8 +210,59 @@ export const MRV_CASES: MrvCase[] = [
       const s = calculateStore(ds, "demo");
       eq(s.calculations["Process CO2 Method A"].Value, null, "Method A not calculated");
       eq(s.calculations["Total Embedded CO2"].Value, null, "total not calculated (missing is never zero)");
-      eq(s.inputIssues.filter((x) => /ambiguous unit/.test(x.reason)).length, ds.rawMaterial.length * 2, "both carbonate fields reported per row");
+      eq(s.qaqc.find((x) => x["Check ID"] === "CP-03")?.Status, "FAIL", "contradictory semantics flagged");
+      eq(s.rawMaterial[0]["CaCO3 %"], 0.95, "source value preserved");
       ok(calculateStore(createSampleDataset(), "demo").inputIssues.length === 0, "percent inputs (78.5) unaffected");
+    },
+  },
+  {
+    id: "EN-02",
+    name: "Explicit unit mapping: fraction vs percent give the same CO2; 0.5 % is valid; contradictions and out-of-range values are flagged; wet basis deducts moisture",
+    run: () => {
+      const base = createSampleDataset();
+      base.setup["Selected calcination method"] = "Method A - raw material input";
+      const pctStore = calculateStore(base, "demo");
+      const pctA = pctStore.calculations["Process CO2 Method A"].Value as number;
+      ok(typeof pctA === "number" && pctA > 0, "percent Method A calculated");
+      eq(pctStore.qaqc.find((x) => x["Check ID"] === "CP-03")?.Status, "WARNING", "undeclared units → WARNING, not PASS");
+      // Same chemistry declared as fractions through the import mapping → identical CO2.
+      const frac = createSampleDataset();
+      frac.setup["Selected calcination method"] = "Method A - raw material input";
+      frac.rawMaterial = frac.rawMaterial.map((x) => ({ ...x, "CaCO3 %": Number(x["CaCO3 %"]) / 100, "MgCO3 %": Number(x["MgCO3 %"]) / 100 }));
+      const m = parseMapping("default=calendar_month_of_date;carbonate=fraction;massBasis=dry")!;
+      eq(m.units, { carbonate: "fraction", massBasis: "dry" }, "units parsed");
+      eq(serializeMapping("calendar_month_of_date", {}, { carbonate: "fraction", massBasis: "dry" }), "default=calendar_month_of_date;carbonate=fraction;massBasis=dry", "units round trip");
+      eq(parseMapping("default=calendar_month_of_date;carbonate=ppm"), null, "unknown unit rejected");
+      const drafts = toReadingDrafts(frac, m);
+      eq(drafts.errors, [], "fraction rows map");
+      const raw = drafts.readings.filter((x) => x.section === "rawMaterial");
+      ok(raw.every((x) => x.payload["Carbonate Unit"] === "fraction" && x.payload["Unit Mapping Version"] === "trace-source-units/v1"), "unit + mapping version stamped on readings");
+      const cfg = Object.fromEntries(toConfigDrafts(frac).map((d) => [d.kind, d.content]));
+      const fracStore = calculateStore(rebuildInput(stored(drafts.readings), cfg, frac.meta), "demo");
+      const fracA = fracStore.calculations["Process CO2 Method A"].Value as number;
+      ok(Math.abs(fracA - pctA) <= 1e-9 * pctA, `fraction-declared Method A equals percent Method A (${fracA} vs ${pctA})`);
+      // 0.5 % declared as percent is a valid percentage (no rejection for being below 1).
+      const small = createSampleDataset();
+      small.rawMaterial = small.rawMaterial.map((x, i) => (i === 0 ? { ...x, "MgCO3 %": 0.5, "Carbonate Unit": "percent" } : x));
+      const sm = calculateStore(small, "demo");
+      eq(sm.inputIssues, [], "0.5 % accepted");
+      eq(sm.rawMaterial[0]["MgCO3 Fraction"], 0.005, "0.5 % → 0.005");
+      // Row-level declaration contradicting the import declaration → validation error.
+      const clash = createSampleDataset();
+      clash.rawMaterial[0]["Carbonate Unit"] = "percent";
+      ok(toReadingDrafts(clash, m).errors.some((e) => /contradicts the import declaration/.test(e)), "row vs import contradiction rejected");
+      // 95 declared as a fraction contradicts its unit → issue, not converted.
+      const over = createSampleDataset();
+      over.rawMaterial = over.rawMaterial.map((x) => ({ ...x, "Carbonate Unit": "fraction" }));
+      ok(calculateStore(over, "demo").inputIssues.some((x) => /contradicts its unit/.test(x.reason)), "out-of-range for declared unit flagged");
+      // Wet basis deducts moisture explicitly; undeclared basis uses the quantity as entered.
+      const wet = createSampleDataset();
+      wet.setup["Selected calcination method"] = "Method A - raw material input";
+      wet.rawMaterial = wet.rawMaterial.map((x) => ({ ...x, "Mass Basis": "wet", "Carbonate Unit": "percent", "Moisture %": 10 }));
+      const ws = calculateStore(wet, "demo");
+      eq(ws.rawMaterial[0]["Dry Quantity t"], Number(wet.rawMaterial[0]["Quantity t"]) * 0.9, "dry quantity = wet × (1 − moisture)");
+      ok(Math.abs((ws.calculations["Process CO2 Method A"].Value as number) - pctA * 0.9) <= 1e-6 * pctA, "wet basis lowers Method A by the moisture share");
+      eq(ws.qaqc.find((x) => x["Check ID"] === "CP-03")?.Status, "PASS", "fully declared units → CP-03 PASS");
     },
   },
   {

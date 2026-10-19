@@ -93,6 +93,7 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     };
     const rpc = async <T,>(uid: string, fn: string, purpose: ExecutorPurpose, t: string, f: string, body: string, key: ExecutorKey = KEY): Promise<T> => {
       await as(uid);
+      // PGlite's now() is the real clock; signatures use the real clock too (NOW is only for range presets).
       const auth = signExecutorRequest(key, purpose, { userId: uid, tenantId: t, facilityId: f }, body);
       const r = await pg.query<{ r: T }>(`select public.${fn}($1, $2, $3, $4::jsonb) as r`, [t, f, body, JSON.stringify(auth)]);
       return r.rows[0].r;
@@ -162,6 +163,20 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     await su();
     const current = Number((await one<{ n: number }>("select count(*)::int as n from public.activity_reading where facility_id = $1 and is_current", [fA1])).n);
     check("current readings equal the source rows", current === imp.inserted, { current });
+    {
+      const drafts = toReadingDrafts(createSampleDataset(), MONTHLY, "workbook:synthetic.xlsx");
+      const batch: ImportBatchMeta = {
+        id: crypto.randomUUID(), origin: "workbook", status: "accepted", filename: "retry.xlsx", sha256: null, size_bytes: null, mime: null, storage_path: null,
+        errors: [], assertions: [], declared_period_start: "2025-01-01", declared_period_end: "2025-03-31", synthetic: true, mapping: MONTHLY,
+        effective_from: "2025-01-01", effective_to: "2025-03-31", effective_basis: "declared_period",
+      };
+      const body = importBody(batch, drafts.readings, []);
+      const first = await rpc<{ status: string; idempotent_replay?: boolean }>(USERS.A, "mrv_import_v2", "import", tA, fA1, body);
+      const retry = await rpc<{ status: string; idempotent_replay?: boolean }>(USERS.A, "mrv_import_v2", "import", tA, fA1, body);
+      await su();
+      const batches = Number((await one<{ n: number }>("select count(*)::int as n from public.import_batch where id = $1", [batch.id])).n);
+      check("idempotent import retry (same batch id, new nonce) returns the stored outcome without a second batch", first.status === "accepted" && retry.idempotent_replay === true && batches === 1, { first, retry, batches });
+    }
 
     // ── 3. Normal server-calculated runs: January, Q1, custom ──
     const jan = await calculate(USERS.A, tA, fA1, { preset: "month", year: 2025, month: 1 });
@@ -194,7 +209,9 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     tampered.results.calcRows.find((x: { Metric: string }) => x.Metric === "Total Embedded CO2").Value = 1;
     tampered.results.calcRows.find((x: { Metric: string }) => x.Metric === "QA/QC Overall Status").Value = "PASS";
     tampered.run.results_fingerprint = "0".repeat(64);
-    const authFor = (body: string, key = KEY, uid = USERS.A) => JSON.stringify(signExecutorRequest(key, "run", { userId: uid, tenantId: tA, facilityId: fA1 }, body));
+    const authFor = (body: string, key = KEY, uid = USERS.A, opts: { issuedAt?: number; facilityId?: string; purpose?: ExecutorPurpose } = {}) =>
+      JSON.stringify(signExecutorRequest(key, opts.purpose ?? "run", { userId: uid, tenantId: tA, facilityId: opts.facilityId ?? fA1 }, body, { issuedAt: opts.issuedAt }));
+    const nowS = Math.floor(Date.now() / 1000);
     const goodAuth = authFor(q1.plan.body);
     const e3 = await err(() => pg.query("select public.mrv_finalize_run($1, $2, $3, $4::jsonb)", [tA, fA1, JSON.stringify(tampered), goodAuth]));
     check("altered emissions / fake QA PASS with a signature for the original body are refused", !!e3 && /signature/.test(e3), e3);
@@ -210,14 +227,25 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     const replayAuth = replayPlan.kind === "run" ? authFor(replayPlan.body) : "{}";
     if (replayPlan.kind === "run") {
       await as(USERS.A);
-      await pg.query("select public.mrv_finalize_run($1, $2, $3, $4::jsonb)", [tA, fA1, replayPlan.body, replayAuth]);
+      const eExp = await err(() => pg.query("select public.mrv_finalize_run($1, $2, $3, $4::jsonb)", [tA, fA1, replayPlan.body, authFor(replayPlan.body, KEY, USERS.A, { issuedAt: nowS - 600 })]));
+      check("expired executor signature (issued 10 min ago) is refused", !!eExp && /expired/.test(eExp), eExp);
+      const eFut = await err(() => pg.query("select public.mrv_finalize_run($1, $2, $3, $4::jsonb)", [tA, fA1, replayPlan.body, authFor(replayPlan.body, KEY, USERS.A, { issuedAt: nowS + 600 })]));
+      check("future-dated executor signature is refused", !!eFut && /future/.test(eFut), eFut);
+      const eFac = await err(() => pg.query("select public.mrv_finalize_run($1, $2, $3, $4::jsonb)", [tA, fA2, replayPlan.body, authFor(replayPlan.body)]));
+      check("a signature for factory A1 cannot be used against factory A2 (cross-facility)", !!eFac && /signature/.test(eFac), eFac);
+      const eOp = await err(() => pg.query("select public.mrv_finalize_run($1, $2, $3, $4::jsonb)", [tA, fA1, replayPlan.body, authFor(replayPlan.body, KEY, USERS.A, { purpose: "import" })]));
+      check("a signature issued for another operation (import) cannot finalize a run", !!eOp && /signature/.test(eOp), eOp);
+      const eNoNonce = await err(() => pg.query("select public.mrv_finalize_run($1, $2, $3, $4::jsonb)", [tA, fA1, replayPlan.body, JSON.stringify({ ...JSON.parse(authFor(replayPlan.body)), nonce: undefined })]));
+      check("a signature without a nonce is refused", !!eNoNonce && eNoNonce.startsWith("42501"), eNoNonce);
+      const idem = await pg.query<{ r: string }>("select public.mrv_finalize_run($1, $2, $3, $4::jsonb) as r", [tA, fA1, replayPlan.body, replayAuth]);
+      check("idempotent retry: a fresh signature for an unchanged plan returns the existing run (no duplicate)", idem.rows[0].r === q1.id, idem.rows[0].r);
       const e6 = await err(() => pg.query("select public.mrv_finalize_run($1, $2, $3, $4::jsonb)", [tA, fA1, replayPlan.body, replayAuth]));
       check("a used executor signature cannot be replayed", !!e6 && /already used/.test(e6), e6);
       await as(USERS.B);
       const e7 = await err(() => pg.query("select public.mrv_finalize_run($1, $2, $3, $4::jsonb)", [tA, fA1, replayPlan.body, replayAuth]));
       check("another user cannot use A's signed request against A's factory", !!e7 && e7.startsWith("42501"), e7);
     }
-    check("no authoritative run was created by any tampering attempt", (await runCount()) === before + 1, { before, after: await runCount() });
+    check("no authoritative run was created by any tampering, replay or retry attempt", (await runCount()) === before, { before, after: await runCount() });
     await as(USERS.A);
     const e8 = await err(() => pg.query("insert into public.calculation_run (tenant_id, facility_id, range_start, range_end, range_label, timezone, engine_version, methodology_version, input_snapshot, input_sha256, results, results_fingerprint, qa_overall, created_by) values ($1, $2, '2025-01-01', '2025-01-31', 'x', 'UTC', 'x', 'x', '{}', 'x', '{}', 'x', 'PASS', $3)", [tA, fA1, USERS.A]));
     check("direct table insert of a run is refused (SELECT-only grant)", !!e8 && e8.startsWith("42501"), e8);

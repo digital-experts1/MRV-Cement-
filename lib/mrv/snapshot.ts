@@ -14,8 +14,9 @@ import { calculateStore } from "@/lib/calcEngine";
 import type { MrvInput, Store } from "@/lib/types";
 import { sha256Json } from "./sha";
 
-// d06.1: per-sheet interval mappings; carbonate content in (0, 1] under a "%" header is rejected as ambiguous.
-export const ENGINE_VERSION = "trace-mrv-engine/2026.10-d06.1";
+// d06.1: per-sheet interval mappings.
+// d06b.1: explicit raw-material unit mapping (percent/fraction, dry/wet); Method A withheld only for contradictory undeclared units.
+export const ENGINE_VERSION = "trace-mrv-engine/2026.10-d06b.1";
 export const METHODOLOGY_VERSION = "TRACE-FORCE-MRV-Cement-V28";
 
 export type RunResults = Omit<Store, "inputs">;

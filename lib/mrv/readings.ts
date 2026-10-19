@@ -9,6 +9,8 @@
  *    are a validation error (they would double count); they are never merged or dropped silently.
  *  - record_key = series | interval | measurement type. Re-importing the same record key with identical content is
  *    "unchanged"; with different content it creates a new revision.
+ *  - Raw-material rows get the import's unit declaration stamped as columns (Carbonate Unit, Moisture Unit, Mass Basis,
+ *    Unit Mapping Version); a contradicting row-level declaration is a validation error.
  *  - legacy_key = the Directive 05 key (series | date | #n) so a re-import with an explicit mapping supersedes readings
  *    that were stored under the old date-based inference (auditable correction; originals are kept).
  */
@@ -17,6 +19,7 @@ import type { MrvInput, RowSource, SheetRow } from "@/lib/types";
 import { toIsoDate } from "@/lib/dates";
 import { MAPPING_VERSION, resolveRowInterval, type Granularity, type ImportMapping, type MeasurementType } from "./importMapping";
 import { SECTION_LABELS_CLIENT } from "./sectionLabels";
+import { applyUnitMapping } from "./unitMapping";
 import { sha256Json } from "./sha";
 
 export const READING_SECTIONS = ["production", "rawMaterial", "kilnFuel", "electricity", "inventory"] as const;
@@ -94,9 +97,16 @@ export function toReadingDrafts(input: MrvInput, mapping: ImportMapping | null, 
   for (const section of READING_SECTIONS) {
     const legacyOcc = new Map<string, number>();
     const bySeries = new Map<string, { start: string; end: string; where: string }[]>();
-    input[section].forEach((row, i) => {
-      const src = (row._source ?? {}) as RowSource;
+    input[section].forEach((sourceRow, i) => {
+      const src = (sourceRow._source ?? {}) as RowSource;
       const where = src.sheet && src.row ? `${src.sheet} row ${src.row}` : `${SECTION_LABELS_CLIENT[section]} entry ${i + 1}`;
+      // Raw-material rows carry their unit semantics explicitly (original values untouched; see unitMapping.ts).
+      const stamped = section === "rawMaterial" ? applyUnitMapping(sourceRow, mapping?.units) : sourceRow;
+      if (typeof stamped === "string") {
+        errors.push(`${where}: ${stamped}.`);
+        return;
+      }
+      const row = stamped as SheetRow;
       const iv = resolveRowInterval(row, mapping, section);
       if (typeof iv === "string") {
         errors.push(`${where}: ${iv}.`);

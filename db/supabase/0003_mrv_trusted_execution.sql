@@ -26,9 +26,11 @@ create table mrv_private.executor_key (
   retired_at timestamptz
 );
 
+-- Replay protection: every signed request carries a random nonce that is consumed exactly once.
 create table mrv_private.executor_nonce (
-  signature text primary key,
+  nonce uuid primary key,
   purpose text not null,
+  actor uuid not null,
   used_at timestamptz not null default now()
 );
 
@@ -58,7 +60,10 @@ begin
   return pg_catalog.sha256(opad || pg_catalog.sha256(ipad || p_msg));
 end $$;
 
--- Verifies a trusted-executor signature over the exact request body and consumes it (single use). Returns the key id.
+-- Verifies a trusted-executor signature (protocol v2, lib/mrv/executorSign.ts) and consumes its nonce. Returns the key id.
+-- Binds: operation, key, actor (= auth.uid() of the calling JWT), tenant, facility, issued_at, nonce, sha256(complete body).
+-- Valid for 120 s after issued_at and at most 30 s in the future. Authorization (has_permission) is checked separately by the
+-- calling RPC at execution time, so a signature never outlives a revoked role.
 create function mrv_private.verify_executor(p_purpose text, p_tenant uuid, p_facility uuid, p_body text, p_auth jsonb)
 returns text language plpgsql security definer set search_path = '' as $$
 declare
@@ -66,7 +71,9 @@ declare
   v_key_id text;
   v_secret bytea;
   v_issued bigint;
+  v_nonce uuid;
   v_expected text;
+  v_now bigint := extract(epoch from now())::bigint;
 begin
   if v_uid is null or p_auth is null or p_body is null or jsonb_typeof(p_auth) <> 'object' then
     raise exception 'trusted executor authorization required' using errcode = '42501';
@@ -75,14 +82,19 @@ begin
   if v_key_id is null then raise exception 'trusted executor authorization required' using errcode = '42501'; end if;
   if coalesce(p_auth->>'issued_at', '') !~ '^[0-9]{9,11}$' then raise exception 'invalid executor authorization' using errcode = '42501'; end if;
   v_issued := (p_auth->>'issued_at')::bigint;
-  if abs(extract(epoch from now()) - v_issued) > 300 then raise exception 'executor authorization expired' using errcode = '42501'; end if;
-  v_expected := encode(mrv_private.hmac_sha256(v_secret, convert_to(concat_ws('|', 'trace-mrv-exec/v1', p_purpose, v_key_id, v_uid::text,
-    p_tenant::text, p_facility::text, v_issued::text, encode(sha256(convert_to(p_body, 'UTF8')), 'hex')), 'UTF8')), 'hex');
+  if v_issued > v_now + 30 then raise exception 'executor authorization issued in the future' using errcode = '42501'; end if;
+  if v_now - v_issued > 120 then raise exception 'executor authorization expired' using errcode = '42501'; end if;
+  if coalesce(p_auth->>'nonce', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+    raise exception 'invalid executor authorization' using errcode = '42501';
+  end if;
+  v_nonce := (p_auth->>'nonce')::uuid;
+  v_expected := encode(mrv_private.hmac_sha256(v_secret, convert_to(concat_ws('|', 'trace-mrv-exec/v2', p_purpose, v_key_id, v_uid::text,
+    p_tenant::text, p_facility::text, v_issued::text, v_nonce::text, encode(sha256(convert_to(p_body, 'UTF8')), 'hex')), 'UTF8')), 'hex');
   if v_expected is distinct from lower(coalesce(p_auth->>'signature', '')) then
     raise exception 'executor signature does not match the request' using errcode = '42501';
   end if;
   begin
-    insert into mrv_private.executor_nonce (signature, purpose) values (v_expected, p_purpose);
+    insert into mrv_private.executor_nonce (nonce, purpose, actor) values (v_nonce, p_purpose, v_uid);
   exception when unique_violation then
     raise exception 'executor authorization already used' using errcode = '42501';
   end;
@@ -223,6 +235,7 @@ declare
   v_eff_from date;
   v_eff_to date;
   v_cfg_changed boolean := false;
+  v_dup_status text;
 begin
   if not mrv_auth.has_permission(p_tenant, p_facility, 'upload.create') then
     raise exception 'permission denied' using errcode = '42501';
@@ -239,6 +252,12 @@ begin
     raise exception 'invalid import body' using errcode = '22023';
   end if;
   perform pg_advisory_xact_lock(hashtextextended(p_facility::text, 0));
+
+  -- Idempotent retry: the batch id is the idempotency key. A retried request (new nonce, same batch) returns the stored outcome.
+  select x.status into v_dup_status from public.import_batch x where x.id = v_batch and x.tenant_id = p_tenant and x.facility_id = p_facility;
+  if v_dup_status is not null then
+    return jsonb_build_object('batch_id', v_batch, 'status', v_dup_status, 'idempotent_replay', true, 'inserted', 0, 'revised', 0, 'unchanged', 0);
+  end if;
 
   select t.synthetic into v_synthetic from public.tenant t where t.id = p_tenant;
   if v_origin = 'demo' and not v_synthetic then
@@ -512,6 +531,17 @@ begin
   if coalesce((v_input->'meta'->>'synthetic')::boolean, false) <> v_synthetic then
     raise exception 'synthetic labelling of the input does not match its sources' using errcode = '22023';
   end if;
+  -- Idempotent retry — only AFTER every integrity check above passed: an identical, still-valid run (same dependency hash,
+  -- engine and input hash; results are a deterministic function of these apart from their generation timestamp) is returned
+  -- instead of duplicated.
+  select cr.id into v_run from public.calculation_run cr
+    where cr.tenant_id = p_tenant and cr.facility_id = p_facility and v_meta->>'dependency_sha256' is not null
+      and cr.dependency_sha256 = v_meta->>'dependency_sha256' and cr.engine_version = v_meta->>'engine_version'
+      and cr.input_sha256 = v_meta->>'input_sha256'
+      and not exists (select 1 from public.run_invalidation i where i.run_id = cr.id)
+    order by cr.created_at desc limit 1;
+  if v_run is not null then return v_run; end if;
+
   -- Derived from the engine results, never accepted as separate caller-supplied values.
   select e->>'Value' into v_qa from jsonb_array_elements(v_results->'calcRows') e where e->>'Metric' = 'QA/QC Overall Status' limit 1;
   if v_qa is null or v_qa not in ('PASS', 'WARNING', 'FAIL', 'INCOMPLETE') then
