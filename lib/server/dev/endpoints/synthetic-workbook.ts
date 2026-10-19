@@ -1,11 +1,8 @@
 import { devGuard } from "@/lib/server/dev/guard";
 import { buildWorkbook, SYNTH_PRODUCTION } from "@/tests/fixtures/synthetic";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 /**
- * Development-only (excluded from production builds): SYNTHETIC test workbooks (Q1 2025, fictitious values).
+ * Development-only (only reachable via the NODE_ENV=development branch of app/api/dev/synthetic-workbook/route.ts): SYNTHETIC test workbooks (Q1 2025, fictitious values).
  * ?variant=base (default) | corrected (January clinker +1,000 t) | invalid (required production sheet missing).
  */
 export async function GET(req: Request) {

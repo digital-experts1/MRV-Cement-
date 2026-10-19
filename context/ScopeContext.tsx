@@ -369,7 +369,12 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
     async (file: File, mapping?: string | null) => {
       if (!tenantId || !facility) return { accepted: false as const, errors: ["Sign in and select a factory before importing."] };
       if (!facility.permissions.includes("upload.create")) return { accepted: false as const, errors: ["You do not have permission to import data for this factory."] };
+      const startToken = guard.current.current();
       const bytes = await file.arrayBuffer();
+      // The factory or range changed while the file was being read: this closure still targets the previous factory.
+      if (!guard.current.isCurrent(startToken)) {
+        throw new StaleScopeError(`The upload into ${facility.code} · ${facility.name} was not sent because you switched factory or range first; nothing was imported.`);
+      }
       const m = mapping ? `&mapping=${encodeURIComponent(mapping)}` : "";
       return withImport(() =>
         mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility.id}/imports?filename=${encodeURIComponent(file.name)}${m}`, {

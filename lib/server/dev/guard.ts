@@ -1,8 +1,8 @@
 import { hostedGuard } from "@/tests/hosted/cases";
 
 /**
- * Runtime guard for development/test endpoints (defence in depth — the routes are also excluded from production builds
- * by their `.dev.ts` extension, see next.config.ts):
+ * Runtime guard for development/test endpoints (defence in depth — the route wrappers in app/api/dev/* import these
+ * implementations only inside a statically-false-in-production `NODE_ENV === "development"` branch, see next.config.ts):
  *  - never in production;
  *  - loopback host only (also defeats DNS-rebinding: the Host header must be localhost/127.0.0.1/[::1]);
  *  - no cross-site browser requests (Sec-Fetch-Site / Origin must be same-origin when present);

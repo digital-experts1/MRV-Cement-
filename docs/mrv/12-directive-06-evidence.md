@@ -42,7 +42,30 @@ executor key. Forged results without that key are rejected; anyone holding the k
 | Other user / cross-tenant with a valid signature rejected | PASS | **PASS** |
 | Revoked user rejected at execution time | PASS | **PASS** |
 | Legitimate server calculation succeeds; import and run retries idempotent | PASS | **PASS** |
-| Concurrent import invalidates an in-flight run (40001) | PASS | — (not run hosted) |
+| Stale plan after a concurrent correction refused immediately (`MRV09`, no server-side retry loop), no run created | PASS | **PASS** |
+| True race finalize ∥ import: finalize refused, or committed first and then invalidated by the import | PASS | **PASS** |
+| Concurrent retries of the current calculation return one run id; no two valid runs share a dependency hash | PASS | **PASS** |
+| Import is all-or-nothing: `accepted` with validation errors refused; `rejected` carrying readings refused; 0 readings stored | PASS | **PASS** |
+
+Stale inputs raise SQLSTATE `MRV09` (not `40001`): PostgREST retries `40001` internally until executor signatures expire.
+The application recalculates on `MRV09` (409) at most 3 times.
+
+## 2a. Credential rotation and development endpoints (Part A)
+- Executor key rotated `exec-1` → `exec-2` and all four synthetic passwords rotated by a development-only flow
+  (`lib/server/dev/secretRotation.ts`, `db/supabase/0004_secret_rotation.sql`): secrets are generated in the database and
+  delivered RSA-encrypted to the server process; no response, log or transcript contains them. Verified (H): `exec-1`
+  refused as inactive, `exec-2` accepted; old passwords rejected, new ones sign in. A pre-rotation session cookie that
+  appeared in tool output was revoked server-side.
+- Development/test endpoints (`app/api/dev/*`, `app/dev/acceptance`) are thin wrappers: the implementation
+  (`lib/server/dev/endpoints/*`, `tests/**`) is imported only inside `if (process.env.NODE_ENV === "development")`,
+  which webpack evaluates statically in production, so the dependency is not bundled; outside development they return
+  404. Implementations additionally require a loopback, same-origin request (`lib/server/dev/guard.ts`); hosted ones
+  also require the explicit test-project configuration. `scripts/check-prod-bundle.mjs` scans `.next/` after a
+  production build for markers that exist only in development code (test-session sign-in, credential variable names,
+  secret rotation, fixture generator, guard, test runners) and fails if any is present. It runs in
+  `.github/workflows/verify.yml`; it could not be run here because builds execute in an isolated workspace.
+- The earlier `.dev.ts` page-extension approach was removed: multi-dot `pageExtensions` caused a Turbopack dev-server
+  full-reload loop.
 
 ## 3. Unit handling (06B §3)
 - `lib/mrv/unitMapping.ts` (`trace-source-units/v1`): importer declares `carbonate`/`moisture` = percent|fraction and
@@ -58,6 +81,16 @@ executor key. Forged results without that key are rejected; anyone holding the k
   deduction) → carbonate unit **and** mass basis must be declared. Missing required declarations: rows rejected at import
   with a mapping error; the engine withholds Method A (CP-03 FAIL). Unknown sources: header applies, CP-03 WARNING while
   units are undeclared.
+- Rules verified by case SP-01 (D) and the hosted all-or-nothing checks (H):
+  - a row declaration contradicting the import declaration (carbonate or mass basis) is a validation error, never a
+    silent precedence;
+  - one invalid required row rejects the whole import (service: any row error → `rejected`, no readings/config sent;
+    database: an `accepted` batch with errors or a `rejected` batch with readings is refused);
+  - "Workbook mode" only selects the parsing profile: identical, fully declared data yields identical results, QA,
+    readiness, evidence status and synthetic labelling for every mode (including an invented "Verified_Approved_Final");
+    profiles carry only `id`, `label`, `workbookModes`, `requiredUnits`, `basis`;
+  - frozen runs keep their stored results and engine version; a newer engine reports recomputation only as a comparison
+    (SN-01), and stored results are displayed as finalized.
 - Engine factor set `STOICH-ROUNDED-MM/v1` (ratios of molar masses rounded to 2 dp — not "exact"). Not changed to match
   the workbook. Production methodology selection requires a documented technical basis.
 - Engine version `trace-mrv-engine/2026.10-d06b.2`; stored runs keep their version and results (earlier runs show
@@ -77,8 +110,14 @@ Q1-A3 quantities are dry basis. Factor scenarios kept separate: `WORKBOOK-REPRO/
 | Stock movement / inventory reconciliation | — | — | — | **unvalidated** — no inventory evidence (MB-04 NOT_EVALUATED) |
 | Product allocation per cement type | — | — | — | **unvalidated** — no approved allocation methodology |
 
-Method A is not the selected method in the workbook, so totals are unaffected. "No discrepancies" applies only to the
-comparable rows above under the stated assumptions.
+**Method A finding:** Method A matches the independent reference under the declared assumptions (Q1-A2 carbonate as
+fractions, Q1-A3 dry basis; pending owner confirmation), but differs from the workbook by **227.53 t** (application
+346,808.87 t vs workbook 347,036.40 t) because the engine uses factor set `STOICH-ROUNDED-MM/v1` while the workbook uses
+0.44 / 0.522. This difference is explained, not resolved, and the comparison is **not** an unqualified "no
+discrepancies" result. The reference-vs-application register has no discrepancies; that statement says nothing about
+agreement with the workbook. The finding is emitted by `q1Reconciliation().methodAFinding` and asserted in
+`tests/q1Reconciliation.test.ts`. Method A is not the selected method in the workbook, so the reported totals are
+unaffected.
 
 ## 5. Signed-in application workflow (06B §4) — demonstrated (H, browser-driven, 2026-10-19)
 Real browser (Playwright) against the dev server on the test project, user A, factory UI1 (empty beforehand):
@@ -94,28 +133,51 @@ Real browser (Playwright) against the dev server on the test project, user A, fa
 6. Application-server restart → fresh browser context (no cookies/storage) → sign-in → factory UI1 restored from
    `workspace_preference` → same stored run and total; database still holds exactly 1 run for UI1.
 
-Not demonstrated in the browser (DB/API level only): duplicate and corrected re-import, invalid import, cross-tenant and
-restricted factory in the UI, January/full-year range selection in the UI.
+Re-imports, invalid import and factory switching (H, browser-driven through the real upload dialog, user A, 2026-10-19,
+after the final code changes):
 
-## 6. Test execution record (this environment)
-| Suite | W | D | R | H |
+| Step (factory UI1 unless stated) | Server outcome | Displayed |
+|---|---|---|
+| Base workbook (content already stored) | `accepted`, 0 inserted / 0 revised / 4 unchanged | 542,835 t |
+| Same content again | `duplicate` (duplicate_of recorded), nothing stored | 542,835 t |
+| Corrected workbook (January clinker revised) | `accepted`, 1 revised / 3 unchanged | 543,368 t |
+| Original base file after the correction | `accepted`, 1 revised (not misclassified as duplicate) | 542,835 t |
+| Invalid workbook (required sheet missing) | `rejected`, error shown, nothing stored | unchanged, 542,835 t |
+| Switch to E1 after the upload request started | import stored in UI1 (`accepted`, 1 revised) | E1 data only; notice: "The import into UI1 … was stored … switch back to UI1 to view it"; UI1 shows the import on return |
+| Switch to E1 between choosing the file and sending (file read slowed deterministically) | no request sent | notice: "The upload into UI1 … was not sent … nothing was imported"; E1 data only |
+| Switch to E1 before choosing the file | imported into E1 (dialog target already E1) | E1 shows it (correct target) |
+| Range change on UI1, then immediate switch to E1 (pending load) | UI1 request superseded | E1 view identical to a fresh reload of the same scope; no error |
+
+The "between choosing and sending" case found a defect: the upload closure could still target the previous factory.
+Fixed in `ScopeContext.importFile` (scope generation re-checked after reading the file). The "before choosing" run
+added 4 synthetic quarterly readings to test factory E1 (kept as history; hosted suite re-run afterwards: 59/59).
+
+Not demonstrated in the browser (DB/API level only): cross-tenant and restricted factory in the UI, January/full-year
+range selection in the UI.
+
+## 6. Test execution record (this environment, final code of Part A)
+| Suite | W | D | R (Vitest) | H |
 |---|---|---|---|---|
-| Pure cases + acceptance (`tests/mrv/cases.ts`, acceptance) | yes | **35/35** (`/api/dev/mrv-selftest`) | not run | — |
-| PGlite DB harness (`tests/mrv/dbHarness.ts`) | yes | **47/47** (`/api/dev/mrv-db-selftest`) | not run | — |
-| Isolation (`tests/isolation/cases.ts`) | yes | **18/18, 130 checks** (`/api/dev/isolation`) | not run | — |
-| Synthetic reference register | yes | 0 discrepancies, 1 not comparable | not run | — |
-| Q1 reconciliation (`tests/q1Reconciliation.test.ts`) | yes | module output checked via `/api/dev/q1-inspect` | **not run** | — |
-| Hosted cases (`tests/hosted/cases.ts`) | yes | — | not run | **43/43** via `/api/dev/hosted-e2e` (21.6 s) |
-| Browser workflow (§5) | — | — | — | **PASS** (steps 1–6) |
+| Pure cases + acceptance (`tests/mrv/cases.ts` incl. SP-01, acceptance) | yes | **36/36** (`/api/dev/mrv-selftest`) | **not run here** | — |
+| PGlite DB harness (`tests/mrv/dbHarness.ts`, loads the edited 0003) | yes | **51/51** | **not run here** | — |
+| Isolation (`tests/isolation/cases.ts`) | yes | **18/18** | **not run here** | — |
+| Q1 reconciliation (`tests/q1Reconciliation.test.ts`) | yes | `methodAFinding` checked via `/api/dev/q1-inspect` (−227.53 t) | **not run here** | — |
+| Hosted cases (`tests/hosted/cases.ts`) | yes | — | not run | **59/59** via `/api/dev/hosted-e2e` |
+| Browser: workflow (§5) and re-import/switching table (§5) | — | — | — | **PASS** |
 | TypeScript | — | — | `tsc` clean | — |
-| Production build (`next build`) | — | — | passed (before hosted files) | — |
+| Production build (`next build --webpack`) | — | — | **passed** on the final code (isolated workspace) | — |
+| Production bundle scan (`scripts/check-prod-bundle.mjs`) | yes | — | **not run here** (CI) | — |
 
-Hosted 43/43 covers: Auth (4 real logins, wrong password, anonymous refused), signed import + idempotent retry,
-Q1/January/custom runs, full-year and partial-January ranges not silently calculated, run idempotency, retired RPCs and
-direct writes denied, 9 tampering/replay/cross-scope rejections with zero runs created, cross-tenant read/import denial,
-restricted factory read/import/calculate, revoked user, and private Storage (owner/restricted download, cross-tenant
-and cross-factory denied, no public URL).
+Hosted 59/59 adds to the earlier 43: executor-key rotation (retired `exec-1` refused, `exec-2` accepted), corrected
+import as a revision, immediate `MRV09` stale refusal with no run created, the true finalize ∥ import race, idempotent
+concurrent retries, and five all-or-nothing import checks.
 
-The Vitest runner could not be invoked from this environment. Locally:
-`npm test` (offline suites) and
-`node --env-file=.env.local ./node_modules/vitest/vitest.mjs run tests/hosted/stagingE2E.test.ts` (hosted).
+**Vitest has not been executed in this environment** (no command runner). It runs in `.github/workflows/verify.yml`
+(`tsc`, `vitest run`, `next build`, bundle scan) on every push, or locally:
+```
+npm ci
+npx tsc --noEmit
+npx vitest run                     # offline suites; the hosted file skips itself without test-project variables
+npm run build && node scripts/check-prod-bundle.mjs
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run tests/hosted/stagingE2E.test.ts   # hosted (test project only)
+```

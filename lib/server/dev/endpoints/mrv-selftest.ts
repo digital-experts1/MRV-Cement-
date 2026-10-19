@@ -2,10 +2,7 @@ import { devGuard } from "@/lib/server/dev/guard";
 import { ACCEPTANCE_CASES } from "@/tests/acceptance/cases";
 import { MRV_CASES } from "@/tests/mrv/cases";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
-/** Development-only (excluded from production builds): pure-logic suites (Directive 02 acceptance + MRV cases). */
+/** Development-only (only reachable via the NODE_ENV=development branch of app/api/dev/mrv-selftest/route.ts): pure-logic suites (Directive 02 acceptance + MRV cases). */
 export async function GET(req: Request) {
   const denied = devGuard(req);
   if (denied) return denied;

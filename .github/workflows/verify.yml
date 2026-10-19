@@ -1,0 +1,31 @@
+name: Verify (types, Vitest, production build, bundle check)
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: TypeScript
+        run: npx tsc --noEmit
+      # Offline suites (pure logic, acceptance, PGlite database harness, isolation, Q1 reconciliation). The hosted suite
+      # (tests/hosted/stagingE2E.test.ts) skips itself: no test-project credentials are configured in CI.
+      - name: Vitest
+        run: npx vitest run --reporter=verbose
+      - name: Production build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.invalid
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ci-placeholder
+      - name: No development capability in the production bundle
+        run: node scripts/check-prod-bundle.mjs

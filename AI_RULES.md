@@ -36,7 +36,7 @@
 - AI features are advisory only: never compute authoritative totals, invent savings, approve reports or modify source data.
 
 ## Project Structure
-- `app/` — pages; register nav entries in `lib/routes.ts`. `app/dev/` — development-only harnesses (404 in production).
+- `app/` — pages; register nav entries in `lib/routes.ts`. `app/dev/`, `app/api/dev/` — development-only: thin wrappers that import their implementation (`lib/server/dev/endpoints/*`) only inside `if (process.env.NODE_ENV === "development")` (never via custom `pageExtensions`); `scripts/check-prod-bundle.mjs` must stay green.
 - `components/layout/`, `components/ui/`, `components/charts/`, `components/icons/`, `components/dataentry/`.
 - `lib/` — pure logic: parsing, engine, QA checks, completeness, exports, data package, drafts, types. `lib/server/` — server-only DB, authz, services, API router.
 - `tests/` — Vitest suites; fixtures must be synthetic and labelled as such.

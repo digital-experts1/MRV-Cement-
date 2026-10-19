@@ -259,8 +259,14 @@ begin
   v_origin := b->>'origin';
   v_status := b->>'status';
   v_batch := mrv_auth.try_uuid(b->>'id');
-  if v_batch is null or v_status not in ('accepted', 'rejected') or jsonb_typeof(v_readings) <> 'array' or jsonb_typeof(v_docs) <> 'array' then
+  if v_batch is null or v_status not in ('accepted', 'rejected') or jsonb_typeof(v_readings) <> 'array' or jsonb_typeof(v_docs) <> 'array'
+     or jsonb_typeof(coalesce(b->'errors', '[]'::jsonb)) <> 'array' then
     raise exception 'invalid import body' using errcode = '22023';
+  end if;
+  -- All-or-nothing: an accepted batch carries no validation errors; a rejected batch stores no readings or configuration.
+  if (v_status = 'accepted' and jsonb_array_length(coalesce(b->'errors', '[]'::jsonb)) > 0)
+     or (v_status = 'rejected' and (jsonb_array_length(v_readings) > 0 or jsonb_array_length(v_docs) > 0)) then
+    raise exception 'an import is accepted whole or rejected whole (no partial acceptance)' using errcode = '22023';
   end if;
   perform pg_advisory_xact_lock(hashtextextended(p_facility::text, 0));
 

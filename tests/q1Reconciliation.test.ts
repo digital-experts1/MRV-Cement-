@@ -27,8 +27,9 @@ describe("Q1 2025 collection workbook (DEMO-labelled) — workbook vs independen
     expect(q.inputIssues).toEqual([]);
     expect(q.declaredRawRows.every((r) => r.unit === "fraction" && r.basis === "dry" && r.version === "trace-source-units/v1")).toBe(true);
     expect(q.declaredRawRows.every((r) => typeof r.caSource === "number" && r.caSource === r.caFraction)).toBe(true);
+    // Reference vs application only — this says nothing about agreement with the workbook.
     expect(q.register.filter((r) => r.status === "discrepancy")).toEqual([]);
-    expect(q.register.find((r) => r.metric === "Process CO2 Method A")?.status).toBe("within_tolerance");
+    expect(q.methodAFinding.referenceVsApplication).toBe("within_tolerance");
     const notComparable = q.register.filter((r) => r.status === "not_comparable").map((r) => r.metric);
     expect(notComparable).toEqual(["Stock movement closing difference", "Product allocation (per cement type)"]);
   });
@@ -37,6 +38,13 @@ describe("Q1 2025 collection workbook (DEMO-labelled) — workbook vs independen
     expect(q.methodAScenarios["WORKBOOK-REPRO/Q1-DEMO/v1"]).toBe("347036.4");
     expect(Number(q.methodAScenarios.workbookCached)).toBeCloseTo(347036.4, 6);
     expect(q.methodAScenarios["STOICH-ROUNDED-MM/v1"]).not.toBe("347036.4");
+  });
+
+  it("reports Method A as matching the reference but ~227.53 t different from the workbook (factor set), not 'no discrepancies'", () => {
+    expect(q.methodAFinding.applicationMinusWorkbookT).toBeCloseTo(-227.53, 2);
+    expect(q.methodAFinding.workbookComparison).toMatch(/differs from workbook \(factor set\)/);
+    expect(q.methodAFinding.statement).toMatch(/matches the independent reference under the declared assumptions/);
+    expect(q.methodAFinding.statement).toMatch(/differs from the workbook by 227\.53 t/);
   });
 
   it("does not report stock reconciliation as passed without inventory evidence", () => {

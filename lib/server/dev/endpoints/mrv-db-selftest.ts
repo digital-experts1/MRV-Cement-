@@ -1,10 +1,7 @@
 import { devGuard } from "@/lib/server/dev/guard";
 import { runDbCases } from "@/tests/mrv/dbHarness";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
-/** Development-only (excluded from production builds): Directive 06 database cases on a fresh in-process PostgreSQL. */
+/** Development-only (only reachable via the NODE_ENV=development branch of app/api/dev/mrv-db-selftest/route.ts): Directive 06 database cases on a fresh in-process PostgreSQL. */
 export async function GET(req: Request) {
   const denied = devGuard(req);
   if (denied) return denied;

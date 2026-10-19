@@ -1,11 +1,8 @@
 import { devGuard } from "@/lib/server/dev/guard";
 import { beginRotation, completeRotation, type CompleteRequest } from "@/lib/server/dev/secretRotation";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 /**
- * Development-only (excluded from production builds): rotation of the test project's executor key and synthetic
+ * Development-only (only reachable via the NODE_ENV=development branch of app/api/dev/secret-rotation/route.ts): rotation of the test project's executor key and synthetic
  * passwords. Secrets are generated in the database and delivered RSA-encrypted to this process; responses never contain
  * secrets. See lib/server/dev/secretRotation.ts and db/supabase/0004_secret_rotation.sql.
  */

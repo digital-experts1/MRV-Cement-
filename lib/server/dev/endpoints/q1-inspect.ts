@@ -1,10 +1,7 @@
 import { devGuard } from "@/lib/server/dev/guard";
 import { q1Reconciliation } from "@/tests/reference/q1";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
-/** Development-only (excluded from production builds): Q1 2025 (DEMO-labelled) workbook reconciliation. */
+/** Development-only (only reachable via the NODE_ENV=development branch of app/api/dev/q1-inspect/route.ts): Q1 2025 (DEMO-labelled) workbook reconciliation. */
 export async function GET(req: Request) {
   const denied = devGuard(req);
   if (denied) return denied;

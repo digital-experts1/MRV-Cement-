@@ -116,6 +116,29 @@ export async function runHostedCases(): Promise<HostedResult> {
     const impE2 = await doImport(A, t, e2);
     check("legitimate signed import accepted (E2)", !impE2.res.error, impE2.res.error ? errText(impE2.res.error) : impE2.res.data);
 
+    // ── All-or-nothing imports: one invalid required row (V28 Demo source without its unit declaration) ──
+    const readingsE1 = async () => (await A.db.from("activity_reading").select("id", { count: "exact", head: true }).eq("facility_id", e1)).count ?? -1;
+    const partialInput = createSampleDataset();
+    partialInput.setup["Workbook mode"] = "Cement_QAQC_V28_Demo";
+    partialInput.rawMaterial = partialInput.rawMaterial.map((r, i) => (i === 0 ? r : { ...r, "Carbonate Unit": "percent", "Mass Basis": "dry" }));
+    const partialDrafts = toReadingDrafts(partialInput, MONTHLY, "demo:SYNTHETIC_E2E_PARTIAL");
+    const partialEff = effectivePeriod({ start: "2025-01-01", end: "2025-03-31" }, partialDrafts.readings)!;
+    const partialBatch = (status: "accepted" | "rejected", errors: string[]): ImportBatchMeta => ({
+      id: crypto.randomUUID(), origin: "demo", status, filename: "SYNTHETIC_E2E_PARTIAL", sha256: null, size_bytes: null, mime: null, storage_path: null,
+      errors, assertions: [], declared_period_start: "2025-01-01", declared_period_end: "2025-03-31", synthetic: true, mapping: MONTHLY,
+      effective_from: partialEff.from, effective_to: partialEff.to, effective_basis: partialEff.basis,
+    });
+    check("the invalid required row is detected while the other rows map (would be a partial import)", partialDrafts.errors.length === 1 && partialDrafts.readings.length > 0, { errors: partialDrafts.errors.length, readings: partialDrafts.readings.length });
+    const beforePartial = await readingsE1();
+    const sendBody = (body: string) => rpc(A.db, "mrv_import_v2", t, e1, body, sign(A.uid, "import", t, e1, body));
+    const p1 = await sendBody(importBody(partialBatch("accepted", partialDrafts.errors), partialDrafts.readings, toConfigDrafts(partialInput)));
+    check("DB refuses an 'accepted' batch that carries validation errors", !!p1.error && /no partial acceptance/.test(errText(p1.error)), errText(p1.error));
+    const p2 = await sendBody(importBody(partialBatch("rejected", partialDrafts.errors), partialDrafts.readings, []));
+    check("DB refuses a 'rejected' batch that would still store readings", !!p2.error && /no partial acceptance/.test(errText(p2.error)), errText(p2.error));
+    const p3 = await sendBody(importBody(partialBatch("rejected", partialDrafts.errors), [], []));
+    check("the whole batch is recorded as rejected with zero readings stored", !p3.error && (p3.data as { status?: string; inserted?: number })?.status === "rejected" && (p3.data as { inserted?: number }).inserted === 0, p3.error ? errText(p3.error) : p3.data);
+    check("no reading of the invalid import reached the database", (await readingsE1()) === beforePartial, { before: beforePartial, after: await readingsE1() });
+
     // ── Server-generated calculation + idempotent retry ──
     const plan = async (c: SupabaseClient, tt: string, ff: string, spec: RangeSpec) => {
       const range = resolveRange(spec, { timezone: TZ });

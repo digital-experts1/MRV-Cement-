@@ -1,13 +1,10 @@
 import { createServerClient, parseCookieHeader, serializeCookieHeader } from "@supabase/ssr";
 import { devGuard } from "@/lib/server/dev/guard";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 const USERS: Record<string, string> = { A: "MRV_E2E_A", B: "MRV_E2E_B", C: "MRV_E2E_C", REVOKED: "MRV_E2E_REVOKED" };
 
 /**
- * Development-only (excluded from production builds): signs the calling browser in as one of the SYNTHETIC hosted-test
+ * Development-only (only reachable via the NODE_ENV=development branch of app/api/dev/test-session/route.ts): signs the calling browser in as one of the SYNTHETIC hosted-test
  * users using the server-side credentials, so browser tests never handle passwords. Sets the normal Supabase session
  * cookies; returns no credential.
  */

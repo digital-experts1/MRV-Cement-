@@ -108,8 +108,23 @@ export function q1Reconciliation() {
   const scenarioA = (caF: string, mgF: string) =>
     ref.rawMaterial.reduce((acc, r) => acc.plus(new Decimal(Number(r["Quantity t"])).mul(new Decimal(Number(r["CaCO3 %"])).mul(caF).plus(new Decimal(Number(r["MgCO3 %"])).mul(mgF)))), new Decimal(0));
 
+  // The register's status compares reference vs application only. Method A against the workbook is reported separately.
+  const appA = declared.app["Process CO2 Method A"];
+  const wbA = workbook["Process CO2 Method A"];
+  const appMinusWorkbook = typeof appA === "number" && typeof wbA === "number" ? new Decimal(appA).minus(wbA).toDecimalPlaces(2).toNumber() : null;
+  const methodAFinding = {
+    referenceVsApplication: register.find((r) => r.metric === "Process CO2 Method A")?.status ?? null,
+    applicationMinusWorkbookT: appMinusWorkbook,
+    workbookComparison: appMinusWorkbook === 0 ? "matches workbook" : "differs from workbook (factor set) — explained, not resolved",
+    statement:
+      appMinusWorkbook === null
+        ? "Method A not comparable."
+        : `Method A matches the independent reference under the declared assumptions (Q1-A2 carbonate as fractions, Q1-A3 dry basis; pending owner confirmation), but differs from the workbook by ${Math.abs(appMinusWorkbook).toFixed(2)} t because the engine uses factor set STOICH-ROUNDED-MM/v1 while the workbook uses 0.44 / 0.522 (WORKBOOK-REPRO/Q1-DEMO/v1). This is not an unqualified "no discrepancies" result.`,
+  };
+
   return {
     labelledDemo: String(setup["Workbook mode"] ?? "").includes("Demo"),
+    methodAFinding,
     mapping: Q1_MAPPING,
     requiredUnits: ref.requiredUnits,
     undeclaredErrors,

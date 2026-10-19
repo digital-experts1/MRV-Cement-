@@ -14,6 +14,7 @@ import { granularityOf, MAPPING_VERSION, parseMapping, serializeMapping, type Im
 import { deriveIntervals } from "@/lib/mrv/cumulative";
 import { planRun, selectConfig, type ConfigDoc } from "@/lib/mrv/executorPayload";
 import { sha256Json } from "@/lib/mrv/sha";
+import { SOURCE_PROFILES } from "@/lib/mrv/sourceProfiles";
 import type { SheetRow } from "@/lib/types";
 import { buildWorkbook } from "../fixtures/synthetic";
 import { discrepancyRegister } from "../reference/reference";
@@ -290,6 +291,49 @@ export const MRV_CASES: MrvCase[] = [
       eq(ws.rawMaterial[0]["Dry Quantity t"], Number(wet.rawMaterial[0]["Quantity t"]) * 0.9, "dry quantity = wet × (1 − moisture)");
       ok(Math.abs((ws.calculations["Process CO2 Method A"].Value as number) - pctA * 0.9) <= 1e-6 * pctA, "wet basis lowers Method A by the moisture share");
       eq(ws.qaqc.find((x) => x["Check ID"] === "CP-03")?.Status, "PASS", "fully declared units → CP-03 PASS");
+    },
+  },
+  {
+    id: "SP-01",
+    name: "Source profiles: conflicting unit declarations never silently override; invalid required rows are reported; workbook mode selects a parsing profile only",
+    run: () => {
+      const m = parseMapping("default=calendar_month_of_date;carbonate=fraction;massBasis=dry")!;
+      // Row vs import declaration conflicts (carbonate and mass basis) are validation errors, not a silent precedence.
+      for (const [col, val] of [["Carbonate Unit", "percent"], ["Mass Basis", "wet"]] as const) {
+        const ds = createSampleDataset();
+        ds.rawMaterial = ds.rawMaterial.map((x) => ({ ...x, "CaCO3 %": Number(x["CaCO3 %"]) / 100, "MgCO3 %": Number(x["MgCO3 %"]) / 100 }));
+        ds.rawMaterial[0][col] = val;
+        const res = toReadingDrafts(ds, m);
+        ok(res.errors.some((e) => /contradicts the import declaration/.test(e)), `${col}: row/import conflict rejected`);
+      }
+      // One row of a declaration-requiring source lacks its declaration: reported, so the import (all-or-nothing) is rejected.
+      const partial = createSampleDataset();
+      partial.setup["Workbook mode"] = "Cement_QAQC_V28_Demo";
+      partial.rawMaterial = partial.rawMaterial.map((x, i) => (i === 0 ? x : { ...x, "Carbonate Unit": "percent", "Mass Basis": "dry" }));
+      const pd = toReadingDrafts(partial, MONTHLY);
+      eq(pd.errors.length, 1, "exactly the invalid row is reported");
+      eq(calculateStore(partial, "demo").calculations["Process CO2 Method A"].Value, null, "engine withholds Method A while any required row is unresolved");
+      // Workbook mode selects a parsing profile only: identical, fully declared data gives identical results, evidence
+      // status, readiness, QA and synthetic labelling whatever the mode says.
+      const declared = (mode: string | null) => {
+        const ds = createSampleDataset();
+        ds.setup["Selected calcination method"] = "Method A - raw material input";
+        ds.rawMaterial = ds.rawMaterial.map((x) => ({ ...x, "Carbonate Unit": "percent", "Mass Basis": "dry" }));
+        if (mode === null) delete ds.setup["Workbook mode"];
+        else ds.setup["Workbook mode"] = mode;
+        const s = calculateStore(ds, "demo");
+        return {
+          values: s.calcRows.map((x) => x.Value),
+          qa: s.qaqc.map((x) => [x["Check ID"], x.Status]),
+          readiness: s.readiness,
+          evidence: s.calculations["Evidence Status"].Value,
+          synthetic: s.meta.synthetic,
+          evidenceRows: s.evidence.map((x) => x.Status),
+        };
+      };
+      const base = declared("Cement_QAQC_V28");
+      for (const mode of ["Cement_QAQC_V28_Demo", "Cement_QAQC_V28_Online", "Verified_Approved_Final", null]) eq(declared(mode), base, `mode ${mode} changes nothing beyond parsing`);
+      for (const p of SOURCE_PROFILES) eq(Object.keys(p).sort(), ["basis", "id", "label", "requiredUnits", "workbookModes"], `profile ${p.id} carries parsing rules only`);
     },
   },
   {
