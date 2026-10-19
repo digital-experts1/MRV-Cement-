@@ -9,7 +9,8 @@ Assessment date: Sprint 1 (baseline commit `eba7e43`).
 |---|---|---|
 | 1 | Baseline, architecture audit, gap analysis | Accepted as planning baseline (Directive 02, with corrections) |
 | 1b | Foundation repairs (Directive 02) | **Delivered — see [09](09-directive-02-evidence.md)** |
-| 2 | Server foundation, canonical model, units, periods | Next — see package in 09; real-data items still need D-02…D-04 |
+| 2a | Multi-tenant foundation (Directive 03) | **Implemented & isolation-tested in development — see [10](10-multi-tenant-foundation.md)**; IdP/DB provider open |
+| 2 | Server foundation, canonical model, units, periods | In progress — persistence of import/entry on top of 2a; real-data items still need D-02…D-04 |
 | 3–10 | See [06-backlog-risks-tests.md](06-backlog-risks-tests.md) | Not started |
 
 ## Documents
@@ -19,12 +20,13 @@ Assessment date: Sprint 1 (baseline commit `eba7e43`).
 | 01 | [Architecture assessment](01-architecture-assessment.md) | Inventory, data flow, trust assessment |
 | 02 | [Gap register](02-gap-register.md) | Evidence-backed findings, F01–F09 and AT-01–AT-10 mapping |
 | 03 | [Coverage matrix](03-coverage-matrix.md) | Cement process and reporting-boundary coverage |
-| 04 | [Target architecture & ADRs](04-target-architecture-adrs.md) | Module boundaries, preserve/refactor/replace, ADR-001…ADR-008 |
+| 04 | [Target architecture & ADRs](04-target-architecture-adrs.md) | Module boundaries, ADRs, accepted decisions AD-01…AD-23 |
 | 05 | [Proposed data model](05-proposed-data-model.md) | Canonical entities for Sprint 2 |
 | 06 | [Backlog, risks, test strategy](06-backlog-risks-tests.md) | 10-sprint backlog, risk register, test strategy |
 | 07 | [Sprint 1 test evidence](07-sprint1-test-evidence.md) | Tests actually executed, expected vs actual |
 | 08 | [Data export format](08-data-export-format.md) | Re-importable data package vs presentation reports |
 | 09 | [Directive 02 evidence & handoff](09-directive-02-evidence.md) | Repairs, executed tests, remaining gaps, next package |
+| 10 | [Multi-tenant foundation](10-multi-tenant-foundation.md) | Schema, permission matrix, data paths, executed isolation tests, migration plan |
 
 Documents still to be created in later sprints: domain & unit dictionary (S2), methodology & factor register (S4),
 Q1 reference calculation package (S4), discrepancy investigation register (S4), permissions & workflow matrix (S7),

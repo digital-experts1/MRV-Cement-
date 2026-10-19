@@ -1092,3 +1092,31 @@
 
 /* ── Draft resolution notice (data entry) ── */
 .draft-notice { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+
+/* ── Active scope bar (organization / factory / period) ── */
+.scope-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  padding: 8px 12px; margin-bottom: 10px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-sm);
+  font-size: 12px;
+}
+.scope-field { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.scope-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+.scope-value { font-weight: 600; color: var(--text-primary); }
+.scope-select {
+  max-width: 260px; padding: 4px 8px; font-size: 12px;
+  border: 1px solid var(--border-strong); border-radius: var(--r-xs, 4px); background: #FFFFFF; color: var(--text-primary);
+}
+.scope-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+.scope-muted { color: var(--text-muted); }
+.scope-user { margin-left: auto; font-weight: 600; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+@media (max-width: 768px) {
+  .scope-field { flex: 1 1 100%; }
+  .scope-select { flex: 1; max-width: none; }
+  .scope-user { margin-left: 0; }
+}
+
+/* ── Sign-in user list ── */
+.signin-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px; }
+.signin-user { text-align: left; justify-content: flex-start; flex-direction: column; align-items: flex-start; white-space: normal; padding: 10px 12px; }
+.signin-user small { font-weight: 500; color: var(--text-muted); }

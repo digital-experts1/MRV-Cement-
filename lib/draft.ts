@@ -54,13 +54,23 @@ export function resolveDraft(draft: DraftRecord | null, store: Store | null): Dr
   return { action: "use-draft", draft };
 }
 
-/** Reads a stored draft. Legacy V1 drafts (no scope metadata) are surfaced for an explicit decision, never auto-applied. */
-export function readDraft(storage: Pick<Storage, "getItem">): DraftRecord | null {
+/**
+ * Reads the draft stored under a scope-specific key (see lib/tenancy/scopeKeys.ts). Unscoped legacy drafts
+ * (V1/V2 global keys) are only considered in the signed-out local workspace, never inside an organization,
+ * and are surfaced for an explicit decision rather than auto-applied.
+ */
+export function readDraft(storage: Pick<Storage, "getItem">, key: string = DRAFT_KEY, includeLegacy = true): DraftRecord | null {
   try {
-    const v2 = storage.getItem(DRAFT_KEY);
+    const scoped = storage.getItem(key);
+    if (scoped) {
+      const parsed = JSON.parse(scoped) as DraftRecord;
+      if (parsed?.schema === 2 && parsed.data?.setup) return parsed;
+    }
+    if (!includeLegacy) return null;
+    const v2 = key === DRAFT_KEY ? null : storage.getItem(DRAFT_KEY);
     if (v2) {
       const parsed = JSON.parse(v2) as DraftRecord;
-      if (parsed?.schema === 2 && parsed.data?.setup) return parsed;
+      if (parsed?.schema === 2 && parsed.data?.setup) return { ...parsed, baseRevision: parsed.baseRevision ?? "legacy-unscoped" };
     }
     const v1 = storage.getItem(LEGACY_DRAFT_KEY);
     if (v1) {

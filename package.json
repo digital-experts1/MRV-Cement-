@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.1",
     "chart.js": "^4.4.4",
     "decimal.js": "^10.6.0",
     "jspdf": "^2.5.2",

@@ -85,3 +85,24 @@ by unresolved blocking issues.
 | AD-09 | Synthetic demo data uses a fictitious facility name and is labelled on every screen and every export; synthetic datasets are never "ready". | Implemented. |
 | AD-10 | "Verified" can only be shown when a `verification_statement` event exists (see 05 §8). Until then all surfaces state "not externally verified". | Wording implemented; event model designed, not implemented. |
 | AD-11 | AI features are advisory: they may explain lineage, assess reports with citations and request deterministic scenario runs; they may not compute authoritative totals, invent savings, approve reports or modify source data. | Work packages reserved in [06](06-backlog-risks-tests.md). |
+
+---
+
+## Directive 03 — Multi-tenant foundation decisions (status: **Accepted**; implemented and tested in development)
+
+Detail, schema, permission matrix and executed test results: [10-multi-tenant-foundation.md](10-multi-tenant-foundation.md).
+
+| ID | Decision | Status / evidence |
+|---|---|---|
+| AD-12 | Business hierarchy: **tenant** (customer organisation / cement group) → **facility** (factory) → **process_unit**; **reporting_period** is facility-specific. A factory is not a tenant. | Implemented (`db/migrations/0001_tenant_foundation.sql`). |
+| AD-13 | **Shared PostgreSQL tables** with enforced isolation (no database-per-tenant): server-side authorization first, tenant-consistent composite FKs, and RLS as defence in depth for a non-bypassing role `trace_app`. | Implemented. RLS + FKs proven against real Postgres (PGlite) in T01–T18. |
+| AD-14 | Tenant context is **transaction-local** (`SET LOCAL ROLE trace_app` + `set_config(..., true)`), so pooled connections never carry context. | Implemented (`lib/server/db/context.ts`); T01 proves no carry-over. |
+| AD-15 | Request-supplied tenant/facility IDs are claims. They are accepted only after membership + scoped role assignments are checked in the same transaction (`withTenant`). Unknown and unauthorized resources both return **404**; visible-but-unpermitted actions return 403. | Implemented (`lib/server/authz/authorize.ts`). |
+| AD-16 | **Membership grants nothing.** Permissions come only from explicit role assignments (tenant-wide or one facility). Approval comes only from the `approver` role, with submitter ≠ approver enforced in service and by a DB CHECK. | Implemented; T05, T14. |
+| AD-17 | Platform administrators have **no routine tenant access**. Support access requires an explicit, time-boxed grant by a tenant admin, is read-only (RLS write policies exclude it) and every use is audited in the tenant's log. | Implemented; T15. |
+| AD-18 | Shared reference catalogue (`ref.factor_catalog`) is read-only to tenants; tenant overrides are versioned, append-only rows in `factor_override`. | Implemented; T17. |
+| AD-19 | Object storage keys are generated server-side as `tenants/<t>/facilities/<f>/…`; downloads use short-lived HMAC tokens bound to user + scope **and** re-authorise on use. | Implemented (in-memory store in dev; private bucket still to be selected). T06, T11. |
+| AD-20 | Background jobs store tenant/facility; the worker claims via a SECURITY DEFINER function and then runs under the requester's **current** authorisation; revoked access fails the job. | Implemented; T08. |
+| AD-21 | AI retrieval scope comes only from the server-validated session/route; model-supplied scope arguments are rejected. | Implemented (retrieval tool only; no LLM integrated). T09. |
+| AD-22 | Portfolio consolidation never averages intensities: Σ emissions ÷ Σ compatible production; internal transfers already counted in a receiving facility's output are removed; mismatched intervals or missing data withhold the figure. | Implemented (`lib/consolidation.ts`); T18. |
+| AD-23 | Identity provider: **not yet selected** (deployment target unknown). Sessions are opaque DB-backed tokens (hash stored); sign-in is a development-only synthetic user picker that returns 404 in production. A maintained IdP (e.g. Auth.js/Better Auth/Neon Auth/Clerk) must be chosen with the deployment decision and map to `app_user.auth_subject`. | **Open** — blocks production sign-in. |

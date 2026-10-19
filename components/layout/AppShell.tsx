@@ -6,6 +6,7 @@ import { ExplainerModal } from "@/components/ui/ExplainerModal";
 import { UploadPrompt } from "@/components/ui/UploadPrompt";
 import { DatasetBanner } from "@/components/ui/DatasetBanner";
 import { Footer } from "./Footer";
+import { ScopeBar } from "./ScopeBar";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 
@@ -42,6 +43,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <button type="button" className="sidebar-backdrop" aria-label="Close navigation" tabIndex={navOpen ? 0 : -1} onClick={closeNav} />
       <Topbar />
       <main id="content" role="main" aria-live="polite">
+        <ScopeBar />
         <DatasetBanner />
         {children}
       </main>

@@ -14,7 +14,9 @@ export type RouteKey =
   | "reportouts"
   | "evidence"
   | "regulatory"
-  | "analytics";
+  | "analytics"
+  | "portfolio"
+  | "access";
 
 export interface RouteDef {
   key: RouteKey;
@@ -40,6 +42,8 @@ export const ROUTES: Record<RouteKey, RouteDef> = {
   evidence: { key: "evidence", href: "/evidence", label: "Evidence Register", icon: "folder" },
   regulatory: { key: "regulatory", href: "/regulatory", label: "Regulatory References", icon: "book-open" },
   analytics: { key: "analytics", href: "/analytics", label: "Analytics Dashboard", icon: "bar-chart-2" },
+  portfolio: { key: "portfolio", href: "/portfolio", label: "Portfolio", icon: "trending-up" },
+  access: { key: "access", href: "/admin/access", label: "Access Management", icon: "lock" },
 };
 
 export const NAV_SECTIONS: { label: string; keys: RouteKey[] }[] = [
@@ -50,4 +54,5 @@ export const NAV_SECTIONS: { label: string; keys: RouteKey[] }[] = [
   { label: "Outputs", keys: ["calculations", "qaqc", "reportouts"] },
   { label: "Evidence & References", keys: ["evidence", "regulatory"] },
   { label: "Analytics", keys: ["analytics"] },
+  { label: "Organization", keys: ["portfolio", "access"] },
 ];

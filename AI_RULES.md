@@ -15,6 +15,14 @@
 - Until the server tier exists, the pure engine in `lib/` is the single calculation path. Keep it free of browser APIs so it can move server-side unchanged.
 - Data model design: `docs/mrv/05-proposed-data-model.md` (tenant scoping via composite FKs + RLS, immutable snapshots, verification events).
 
+## Multi-tenancy (Directive 03 — see `docs/mrv/10-multi-tenant-foundation.md`)
+- Tenant = customer organisation; facility = factory; periods are facility-specific. Schema: `db/migrations/` (additive only, never reset).
+- All tenant data access goes through `withTenant` (`lib/server/authz/authorize.ts`) → `asUser` (transaction-local `trace_app` role + context). Never query tenant tables as owner outside migrations/seed/session issuance.
+- Every tenant-owned table: `tenant_id` + `facility_id`, composite FKs to parents, RLS policies. Browser-supplied IDs are claims only; reject unknown body keys.
+- Membership grants nothing; permissions only from `lib/tenancy/permissions.ts` role assignments. Only `approver` approves.
+- API: add routes to `lib/server/api/router.ts` only. Client: `useScope()` / `scopedFetch`; cache/draft keys via `lib/tenancy/scopeKeys.ts`.
+- Isolation suite `tests/isolation/cases.ts` must stay green (`npm test` or dev `GET /api/dev/isolation`); add cases for new persisted modules.
+
 ## Calculation & data rules (non-negotiable)
 - Workbook import, manual entry, demo and data-package re-import all go through `calculateStore` (`lib/calcEngine.ts`). Workbook totals/statuses are comparison assertions only (`lib/assertions.ts`).
 - Parse numbers only with `lib/numeric.ts` (strict; ambiguous text rejected). Dates via `lib/dates.ts`.
@@ -29,7 +37,7 @@
 ## Project Structure
 - `app/` — pages; register nav entries in `lib/routes.ts`. `app/dev/` — development-only harnesses (404 in production).
 - `components/layout/`, `components/ui/`, `components/charts/`, `components/icons/`, `components/dataentry/`.
-- `lib/` — pure logic: parsing, engine, QA checks, completeness, exports, data package, drafts, types.
+- `lib/` — pure logic: parsing, engine, QA checks, completeness, exports, data package, drafts, types. `lib/server/` — server-only DB, authz, services, API router.
 - `tests/` — Vitest suites; fixtures must be synthetic and labelled as such.
 - `docs/mrv/` — architecture, model, backlog, test evidence.
 

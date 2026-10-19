@@ -96,6 +96,18 @@ export const EXPLANATIONS: Record<string, Explanation> = {
     whatDoes: "Visualizes emission trends, fuel mix breakdowns, and benchmark comparisons with dynamic filters.",
     whySeeing: "Identifies decarbonization opportunities, alternative fuel potential, and operational outliers.",
   },
+  "nav-portfolio": {
+    title: "Portfolio",
+    whatIs: "Organization-level view across the factories you are authorized to access.",
+    whatDoes: "Shows each factory's results and reporting boundary, and a consolidated intensity from summed emissions and production (never an average of intensities).",
+    whySeeing: "Factories outside your access are not included. Values are internal and not externally verified.",
+  },
+  "nav-access": {
+    title: "Access Management",
+    whatIs: "Tenant-administrator tool for organization membership and factory access.",
+    whatDoes: "Adds existing users to the organization and grants or revokes roles tenant-wide or per factory.",
+    whySeeing: "Membership alone grants no access; approval rights come only from the Approver role.",
+  },
   "btn-upload": {
     title: "Upload Workbook",
     whatIs: "Excel file ingestion tool.",

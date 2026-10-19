@@ -1,6 +1,9 @@
 # 05 — Canonical Data Model (v2, corrected per Supervisor Directive 02)
 
-Target: PostgreSQL. Status: **design — not yet implemented** (Sprint 2). No migration has been run against any database.
+Target: PostgreSQL. Status: tenancy/identity/operational ownership layer **implemented** in `db/migrations/0001_tenant_foundation.sql`
+(see [10](10-multi-tenant-foundation.md); names there supersede this design where they differ, e.g. `facility_role_assignment`
+replaces `role_assignment`, `ref.factor_catalog` + `factor_override`). Remaining entities below are still design only.
+The migration has only been run against ephemeral in-process databases, never against a deployed database.
 Conventions: `id uuid`, `created_at`, `created_by`. Mutable tables carry `version` (optimistic concurrency).
 ⛔ = insert-only (enforced by revoking UPDATE/DELETE from the application role and by triggers).
 
@@ -125,4 +128,5 @@ separately. NOT_EVALUATED never counts as pass.
 | completeness_result | `lib/completeness.ts` | rules hard-coded, not yet `ref.completeness_rule` |
 | calculation_snapshot (immutable inputs) | `Store.inputs` deep-copied + `meta.revision` hash | in memory only; no persistence |
 | verification_statement | **not implemented**; UI states "not externally verified" everywhere | |
-| tenancy / roles / product_allocation | **not implemented** (Sprint 2/7) | |
+| tenancy / roles | `db/migrations/0001_tenant_foundation.sql`, `lib/server/**` | tested in dev (doc 10) |
+| product_allocation | **not implemented** (Sprint 7) | |

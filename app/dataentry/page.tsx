@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icons/Icon";
 import { QaDot } from "@/components/ui/Badge";
 import { EntryTable } from "@/components/dataentry/EntryTable";
+import { useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { calculateStore, DEFAULT_FUEL_FACTORS, DEFAULT_CONSTANTS } from "@/lib/calcEngine";
 import { createSampleDataset } from "@/lib/sampleData";
 import { downloadExcel, downloadBlankTemplate, downloadDataPackage } from "@/lib/export";
 import { DRAFT_KEY, LEGACY_DRAFT_KEY, describeDraft, makeDraft, readDraft, resolveDraft, type DraftRecord } from "@/lib/draft";
+import { scopedDraftKey } from "@/lib/tenancy/scopeKeys";
 import type { MrvInput, RowSource, SheetRow } from "@/lib/types";
 
 type TabKey =
@@ -77,22 +79,28 @@ function rowStatusBadge(status: unknown): string {
 export default function DataEntryPage() {
   const router = useRouter();
   const { store, setStoreData } = useStore();
+  const { active, activeKey } = useScope();
+  // Drafts are keyed by user/organization/factory/period; unscoped legacy drafts only exist in the local workspace.
+  const draftKey = scopedDraftKey(active);
+  const localWorkspace = active.tenantId === null;
   const [activeTab, setActiveTab] = useState<TabKey>("setup");
   const [formData, setFormData] = useState<MrvInput>(blankForm);
   const [baseRevision, setBaseRevision] = useState<string | null>(null);
   const [pendingDraft, setPendingDraft] = useState<{ draft: DraftRecord; reason: string } | null>(null);
   const [isSaved, setIsSaved] = useState(false);
   const [submittedAlert, setSubmittedAlert] = useState(false);
-  const resolvedFor = useRef<string | null | undefined>(undefined);
+  const resolvedFor = useRef<string | undefined>(undefined);
 
   // Explicit draft resolution by facility / period / dataset revision. Stale drafts are never applied silently.
   useEffect(() => {
     const activeRevision = store?._valid ? store.meta.revision : null;
-    if (resolvedFor.current === activeRevision) return;
-    resolvedFor.current = activeRevision;
+    // Re-resolve whenever the scope changes too, so form contents never carry over to another factory/organization.
+    const resolutionKey = `${activeKey}|${activeRevision}`;
+    if (resolvedFor.current === resolutionKey) return;
+    resolvedFor.current = resolutionKey;
 
     const fromStore = store?._valid ? structuredClone(store.inputs) : blankForm();
-    const draft = readDraft(window.localStorage);
+    const draft = readDraft(window.localStorage, draftKey, localWorkspace);
     const decision = resolveDraft(draft, store);
     if (decision.action === "use-draft") {
       setFormData(decision.draft.data);
@@ -103,13 +111,16 @@ export default function DataEntryPage() {
       setBaseRevision(activeRevision);
       setPendingDraft(decision.action === "ask" ? { draft: decision.draft, reason: decision.reason } : null);
     }
-  }, [store]);
+  }, [store, activeKey, draftKey, localWorkspace]);
 
   const saveDraft = useCallback(
     (data: MrvInput = formData) => {
       try {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify(makeDraft(data, baseRevision)));
-        localStorage.removeItem(LEGACY_DRAFT_KEY);
+        localStorage.setItem(draftKey, JSON.stringify(makeDraft(data, baseRevision)));
+        if (localWorkspace) {
+          localStorage.removeItem(DRAFT_KEY);
+          localStorage.removeItem(LEGACY_DRAFT_KEY);
+        }
         setPendingDraft(null);
         setIsSaved(true);
         setTimeout(() => setIsSaved(false), 2000);
@@ -117,12 +128,15 @@ export default function DataEntryPage() {
         console.error("Draft save error:", e);
       }
     },
-    [formData, baseRevision]
+    [formData, baseRevision, draftKey, localWorkspace]
   );
 
   function clearDraft() {
-    localStorage.removeItem(DRAFT_KEY);
-    localStorage.removeItem(LEGACY_DRAFT_KEY);
+    localStorage.removeItem(draftKey);
+    if (localWorkspace) {
+      localStorage.removeItem(DRAFT_KEY);
+      localStorage.removeItem(LEGACY_DRAFT_KEY);
+    }
   }
 
   function restorePendingDraft() {
@@ -221,7 +235,7 @@ export default function DataEntryPage() {
   function handleSubmit() {
     const finalStore = calculateStore(formData, "manual");
     clearDraft();
-    resolvedFor.current = finalStore.meta.revision;
+    resolvedFor.current = `${activeKey}|${finalStore.meta.revision}`;
     setStoreData(finalStore);
     setBaseRevision(finalStore.meta.revision);
     setSubmittedAlert(true);
