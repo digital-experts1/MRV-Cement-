@@ -85,8 +85,13 @@ function periodCheck(ctx: EngineContext): SheetRow {
   for (const [sheet, rows] of groups) {
     rows.forEach((row, idx) => {
       count++;
+      // A row with an explicit interval is checked by its whole interval; otherwise by its Date.
+      const is = toIsoDate(row["Interval Start"]);
+      const ie = toIsoDate(row["Interval End"]);
       const d = toIsoDate(row.Date);
-      if (!d) undated.push(rowLabel(sheet, row, idx));
+      if (is && ie) {
+        if (is < start || ie > end) outside.push(`${rowLabel(sheet, row, idx)} (${is} – ${ie})`);
+      } else if (!d) undated.push(rowLabel(sheet, row, idx));
       else if (d < start || d > end) outside.push(`${rowLabel(sheet, row, idx)} (${d})`);
     });
   }
@@ -105,7 +110,8 @@ function stockCheck(ctx: EngineContext): SheetRow {
   const { clinkerProduced, clinkerUsed } = ctx.agg;
   if (clinkerProduced === null || clinkerUsed === null) return check(def, "NOT_EVALUATED", "missing production", "Clinker produced/used not available");
 
-  const sorted = [...rows].sort((a, b) => String(toIsoDate(a.row.Date) ?? "").localeCompare(String(toIsoDate(b.row.Date) ?? "")));
+  const when = (r: (typeof rows)[number]) => String(toIsoDate(r.row["Interval Start"]) ?? toIsoDate(r.row.Date) ?? "");
+  const sorted = [...rows].sort((a, b) => when(a).localeCompare(when(b)));
   const opening = sorted[0].d["Opening Stock t"] as Decimal;
   const closing = sorted[sorted.length - 1].d["Closing Stock t"] as Decimal;
   const purchased = sorted.reduce((a, r) => a.plus(r.d["Purchased t"] as Decimal), new Decimal(0));

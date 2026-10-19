@@ -1,6 +1,7 @@
 import { createServerClient, parseCookieHeader, serializeCookieHeader } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "@/integrations/supabase/client";
+import { supabaseConfig, SupabaseConfigError } from "@/integrations/supabase/client";
+import { HttpError } from "@/lib/server/authz/errors";
 
 export interface MrvCaller {
   /** User-scoped client: every query/RPC runs as `authenticated` with this user's JWT, so RLS applies. */
@@ -14,8 +15,15 @@ export interface MrvCaller {
  * No service-role key is used anywhere in the application.
  */
 export async function authenticateRequest(req: Request): Promise<{ caller: MrvCaller | null; setCookies: string[] }> {
+  let cfg: { url: string; key: string };
+  try {
+    cfg = supabaseConfig();
+  } catch (e) {
+    if (e instanceof SupabaseConfigError) throw new HttpError(503, e.message);
+    throw e;
+  }
   const setCookies: string[] = [];
-  const db = createServerClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+  const db = createServerClient(cfg.url, cfg.key, {
     cookies: {
       getAll: () => parseCookieHeader(req.headers.get("cookie") ?? "").map((c) => ({ name: c.name, value: c.value ?? "" })),
       setAll: (cookies) => {

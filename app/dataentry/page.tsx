@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icons/Icon";
 import { QaDot } from "@/components/ui/Badge";
 import { EntryTable } from "@/components/dataentry/EntryTable";
+import { MappingSelect } from "@/components/ui/MappingSelect";
+import type { IntervalMapping } from "@/lib/mrv/importMapping";
 import { useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { calculateStore, DEFAULT_FUEL_FACTORS, DEFAULT_CONSTANTS } from "@/lib/calcEngine";
@@ -82,6 +84,7 @@ export default function DataEntryPage() {
   const { active, activeKey, saveManual, status: scopeStatus, canImport } = useScope();
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [mapping, setMapping] = useState<IntervalMapping | "">("");
   // Drafts are keyed by user/organization/factory/period; unscoped legacy drafts only exist in the local workspace.
   const draftKey = scopedDraftKey(active);
   const localWorkspace = active.tenantId === null;
@@ -240,7 +243,7 @@ export default function DataEntryPage() {
     setSubmitError(null);
     setSubmitting(true);
     try {
-      const outcome = await saveManual(formData);
+      const outcome = await saveManual(formData, mapping || null);
       if (!outcome.accepted) {
         setSubmitError(outcome.errors.join(" "));
         return;
@@ -310,6 +313,8 @@ export default function DataEntryPage() {
             </button>
           </div>
         </div>
+
+        <MappingSelect id="dataentry-mapping" value={mapping} onChange={setMapping} />
 
         {/* Required-data completeness (separate from QA pass rate) */}
         <div className="studio-progress-wrap">

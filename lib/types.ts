@@ -78,6 +78,8 @@ export interface StoreMeta {
   synthetic: boolean;
   /** Deterministic hash of the input dataset; used to detect stale drafts. */
   revision: string | null;
+  /** Set when the dataset is a stored calculation run: exports cite exactly this run. */
+  run?: { id: string; input_sha256: string; results_sha256: string | null; engine_version: string; created_at: string; stale: boolean } | null;
 }
 
 export interface Co2BreakdownItem {

@@ -5,6 +5,10 @@ import { HttpError } from "@/lib/server/authz/errors";
 export function dbFail(error: PostgrestError | { code?: string; message?: string } | null): HttpError {
   const code = error?.code ?? "";
   if (code === "42501" || code === "PGRST301") return new HttpError(403, "Forbidden");
+  if (code === "PGRST202" || code === "42883" || code === "42703") {
+    return new HttpError(503, "The database schema is older than this application (migration 0003 not applied). Imports and calculations are disabled.");
+  }
+  if (code === "40001") return new HttpError(409, error?.message ?? "Data changed during the operation; retry");
   if (code === "22023" || code === "54000") return new HttpError(400, error?.message ?? "Invalid request");
   if (code.startsWith("23") || code.startsWith("22")) return new HttpError(400, "Request violates a data constraint");
   console.error("[mrv] database error", { code, message: error?.message });

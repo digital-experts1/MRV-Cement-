@@ -3,6 +3,17 @@
 import { useScope } from "@/context/ScopeContext";
 import { SECTION_LABELS_CLIENT } from "@/lib/mrv/sectionLabels";
 
+const EXCLUSION_LABELS: Record<string, string> = {
+  partial_overlap: "cross the range boundary (not prorated)",
+  superseded_by_coarser_total: "a period total of the same series is used (reconciled)",
+  conflict: "conflicting overlapping totals",
+  withdrawn: "withdrawn",
+  not_accepted: "not accepted",
+  legacy_inferred_interval: "interval was inferred by the retired date rule — re-import with an explicit mapping",
+  unsupported_measurement: "not an interval total",
+  inventory_anchor: "inventory statements without valid anchors",
+};
+
 const fmtTime = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
 /** Persisted-run provenance, coverage and staleness for the active range. */
@@ -24,12 +35,24 @@ export function RunStatus() {
             <span>
               Calculated {fmtTime(s.run.created_at)} from {s.run.readings} stored readings · engine <span className="mono">{s.run.engine_version}</span>
             </span>
-            {s.run.integrity === "verified_reproducible" ? (
-              <span className="scope-muted" title="The engine re-ran the frozen inputs and reproduced the stored results. This is not external verification.">
-                recomputation matches
-              </span>
+            {s.run.integrity.stored === "altered" ? (
+              <span className="badge badge-fail">Stored result no longer matches its finalization hash</span>
+            ) : null}
+            {s.run.integrity.sameEngine ? (
+              s.run.integrity.recomputeMatches ? (
+                <span className="scope-muted" title="The same engine version re-ran the frozen inputs and reproduced the stored results. This is not external verification.">
+                  recomputation matches
+                </span>
+              ) : (
+                <span className="badge badge-fail">Same engine does not reproduce the stored result</span>
+              )
             ) : (
-              <span className="badge badge-fail">{s.run.integrity === "mismatch" ? "Stored result does not reproduce" : "Engine version changed — recalculate"}</span>
+              <span
+                className="badge badge-warn"
+                title={`Stored results were produced by ${s.run.integrity.storedEngine} and are shown unchanged. The current engine (${s.run.integrity.currentEngine}) ${s.run.integrity.recomputeMatches ? "gives the same results" : "gives different results"}; that comparison does not prove historical reproducibility.`}
+              >
+                Earlier engine · current engine {s.run.integrity.recomputeMatches ? "agrees" : "differs"} (comparison only)
+              </span>
             )}
           </>
         ) : (
@@ -54,12 +77,33 @@ export function RunStatus() {
               {SECTION_LABELS_CLIENT[section] ?? section} missing: {months.join(", ")}
             </span>
           ))}
-          {cov.partialOverlaps.length ? (
-            <span className="badge badge-warn" title={cov.partialOverlaps.map((p) => `${p.section} ${p.interval}`).join("\n")}>
-              {cov.partialOverlaps.length} monthly reading(s) cross the range boundary and were excluded (not prorated)
+          {(Object.entries(cov.excludedCounts ?? {}) as [string, number][]).map(([reason, n]) => (
+            <span
+              key={reason}
+              className="badge badge-warn"
+              title={cov.excluded.filter((e) => e.reason === reason).slice(0, 20).map((e) => `${SECTION_LABELS_CLIENT[e.section] ?? e.section} ${e.interval}`).join("\n")}
+            >
+              {n} reading(s) excluded: {EXCLUSION_LABELS[reason] ?? reason}
             </span>
-          ) : null}
-          {cov.supersededDaily ? <span className="badge badge-warn">{cov.supersededDaily} daily reading(s) excluded: a monthly total exists for the same month</span> : null}
+          ))}
+          {(cov.reconciliations ?? []).filter((r) => r.status === "discrepancy").map((r) => (
+            <span key={r.coarse.id} className="badge badge-fail" title={r.fields.map((x) => `${x.field}: total ${x.coarse ?? "—"} vs Σ finer ${x.finerSum ?? "—"}`).join("\n")}>
+              {SECTION_LABELS_CLIENT[r.section] ?? r.section} {r.coarse.interval}: finer readings disagree with the period total
+            </span>
+          ))}
+          {(cov.conflicts ?? []).map((c) => (
+            <span key={c.ids.join()} className="badge badge-fail" title={c.intervals.join("\n")}>
+              {SECTION_LABELS_CLIENT[c.section] ?? c.section}: {c.ids.length} conflicting overlapping totals — none used
+            </span>
+          ))}
+          {(cov.anchorIssues ?? []).map((a) => (
+            <span key={a.series_key} className="badge badge-warn" title={a.detail}>
+              Inventory {a.series_key.split("|").slice(1).join(" ")}: no valid opening/closing anchors — not used
+            </span>
+          ))}
+          {(cov.configGaps ?? []).map((g) => (
+            <span key={g} className="badge badge-fail">{g}</span>
+          ))}
           {cov.extendsIntoFuture ? <span className="badge badge-warn">Range extends past today — partial period</span> : null}
         </div>
       ) : null}

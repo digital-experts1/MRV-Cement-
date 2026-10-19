@@ -1,6 +1,8 @@
 /**
- * Supabase-backed MRV services (Directives 04/05). Every call runs with the signed-in user's JWT: reads are filtered
- * by RLS and writes go through permission-checking RPCs. Calculations always use `calculateStore`.
+ * Supabase-backed MRV services (Directives 04–06). Every call runs with the signed-in user's JWT: reads are filtered by
+ * RLS. Imports and calculation runs are produced here (parsing, validation, the authoritative engine) and persisted only
+ * through executor-signed RPCs that re-check permissions and independently verify inputs (0003). The browser never
+ * submits authoritative values.
  */
 import { calculateStore } from "@/lib/calcEngine";
 import { parseDataPackage } from "@/lib/dataPackage";
@@ -11,15 +13,16 @@ import { createEmptyInput, type DataOrigin, type MrvInput, type RowSource, type 
 import { badRequest, forbidden, HttpError, isUuid, notFound } from "@/lib/server/authz/errors";
 import { PRIVATE_BUCKET } from "@/integrations/supabase/client";
 import type { MrvCaller } from "@/lib/server/supabase/auth";
-import { isValidTimezone, resolveRange, validateSpec, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
-import { CONFIG_KINDS, rebuildInput, toConfigDrafts, toReadingDrafts, type ConfigKind, type StoredReading } from "@/lib/mrv/readings";
-import { computeCoverage, requiredSectionsFor, selectForRange, type Coverage } from "@/lib/mrv/rangeSelection";
-import {
-  checkRunIntegrity, ENGINE_VERSION, inputSha, METHODOLOGY_VERSION, qaOverall, qaRows, restoreStore, resultsFingerprint,
-  resultsOf, scopeInputToRange, type RunIntegrity, type RunResults,
-} from "@/lib/mrv/snapshot";
+import { addDays, isValidTimezone, resolveRange, validateSpec, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
+import { MAPPING_VERSION, parseMapping, type ImportMapping } from "@/lib/mrv/importMapping";
+import { toConfigDrafts, toReadingDrafts, type StoredReading } from "@/lib/mrv/readings";
+import type { Coverage } from "@/lib/mrv/rangeSelection";
+import { effectivePeriod, importBody, planRun, type ConfigDoc } from "@/lib/mrv/executorPayload";
+import { signExecutorRequest, type ExecutorPurpose } from "@/lib/mrv/executorSign";
+import { checkRunIntegrity, ENGINE_VERSION, restoreStore, type RunIntegrity, type RunResults } from "@/lib/mrv/snapshot";
 import { sha256Bytes } from "@/lib/mrv/sha";
 import { dbFail, fetchAll } from "./db";
+import { executorKey } from "./executor";
 
 export interface FacilityView {
   id: string;
@@ -39,6 +42,8 @@ export interface RunMeta {
   engine_version: string;
   methodology_version: string;
   input_sha256: string;
+  results_sha256: string | null;
+  dependency_sha256: string | null;
   qa_overall: string;
   synthetic: boolean;
   created_at: string;
@@ -53,8 +58,6 @@ export interface RunView {
   run: RunMeta;
   store: Store;
 }
-
-const ORIGINS: DataOrigin[] = ["workbook", "manual", "demo", "data-package"];
 
 function ids(t: unknown, f?: unknown) {
   if (!isUuid(t) || (f !== undefined && !isUuid(f))) throw notFound();
@@ -175,6 +178,14 @@ export async function listImports(caller: MrvCaller, t: string, f: string) {
   return data ?? [];
 }
 
+// ───────────────────────── Trusted executor ─────────────────────────
+async function executorRpc<T>(caller: MrvCaller, fn: string, purpose: ExecutorPurpose, t: string, f: string, body: string): Promise<T> {
+  const auth = signExecutorRequest(executorKey(), purpose, { userId: caller.user.id, tenantId: t, facilityId: f }, body);
+  const { data, error } = await caller.db.rpc(fn, { p_tenant: t, p_facility: f, p_body: body, p_auth: auth });
+  if (error) throw dbFail(error);
+  return data as T;
+}
+
 // ───────────────────────── Imports ─────────────────────────
 export interface ImportOutcomeView {
   accepted: boolean;
@@ -200,14 +211,15 @@ async function recordImport(
   ctx: Awaited<ReturnType<typeof requireFacility>>,
   t: string,
   f: string,
-  args: { origin: DataOrigin; candidate: Store; filename: string | null; bytes?: Uint8Array; mime?: string }
+  args: { origin: DataOrigin; candidate: Store; filename: string | null; bytes?: Uint8Array; mime?: string; mapping: ImportMapping | null }
 ): Promise<ImportOutcomeView> {
+  executorKey(); // fail before storing anything when the trusted executor is unavailable
   const { candidate, origin } = args;
   const batchId = crypto.randomUUID();
   let errors = candidate._valid ? [] : candidate._errors.length ? candidate._errors : ["The file could not be validated."];
-  const drafts = candidate._valid ? toReadingDrafts(candidate.inputs) : { readings: [], errors: [] };
+  const drafts = candidate._valid ? toReadingDrafts(candidate.inputs, args.mapping, `${origin}:${args.filename ?? "entry"}`) : { readings: [], errors: [] };
   errors = [...errors, ...drafts.errors];
-  if (!errors.length && drafts.readings.length === 0) errors.push("The file contains no dated readings.");
+  if (!errors.length && drafts.readings.length === 0) errors.push("The file contains no readings.");
   if (!errors.length && candidate.meta.synthetic && !ctx.synthetic) {
     errors.push("Synthetic demo data can only be stored in an organization marked as synthetic.");
   }
@@ -230,10 +242,9 @@ async function recordImport(
   }
 
   const period = candidate._valid ? declaredPeriod(candidate.inputs) : null;
-  const { data, error } = await caller.db.rpc("mrv_record_import", {
-    p_tenant: t,
-    p_facility: f,
-    p_batch: {
+  const eff = errors.length ? null : effectivePeriod(period, drafts.readings);
+  const body = importBody(
+    {
       id: batchId,
       origin,
       status: errors.length ? "rejected" : "accepted",
@@ -247,12 +258,17 @@ async function recordImport(
       declared_period_start: period?.start ?? null,
       declared_period_end: period?.end ?? null,
       synthetic: candidate.meta.synthetic,
+      mapping: args.mapping,
+      effective_from: eff?.from ?? null,
+      effective_to: eff?.to ?? null,
+      effective_basis: eff?.basis ?? null,
     },
-    p_readings: errors.length ? [] : drafts.readings,
-    p_documents: errors.length ? [] : toConfigDrafts(candidate.inputs),
-  });
-  if (error) throw dbFail(error);
-  const res = data as { batch_id: string; status: ImportOutcomeView["status"]; inserted: number; revised: number; unchanged: number; duplicate_of?: string | null };
+    errors.length ? [] : drafts.readings,
+    errors.length ? [] : toConfigDrafts(candidate.inputs)
+  );
+  const res = await executorRpc<{ batch_id: string; status: ImportOutcomeView["status"]; inserted: number; revised: number; unchanged: number; duplicate_of?: string | null }>(
+    caller, "mrv_import_v2", "import", t, f, body
+  );
   const outcome: ImportOutcomeView = {
     accepted: res.status !== "rejected",
     status: res.status,
@@ -263,18 +279,14 @@ async function recordImport(
     run: null,
     runNote: null,
   };
-  if (res.status === "rejected") return outcome;
+  if (res.status === "rejected" || !eff) return outcome;
 
   // Recalculate the period the import declares (or the span of its readings) so the user sees the stored result.
-  const span = period ?? {
-    start: drafts.readings.reduce((m, r) => (r.interval_start < m ? r.interval_start : m), drafts.readings[0].interval_start),
-    end: drafts.readings.reduce((m, r) => (r.interval_end > m ? r.interval_end : m), drafts.readings[0].interval_end),
-  };
   if (!(await can(caller, t, f, "calculation.run"))) {
     outcome.runNote = "Imported. You do not have permission to run calculations; an MRV analyst or facility manager must calculate.";
     return outcome;
   }
-  const calc = await calculateRange(caller, t, f, { preset: "custom", start: span.start, end: span.end }, {
+  const calc = await calculateRange(caller, t, f, { preset: "custom", start: eff.from, end: eff.to }, {
     triggerBatchId: res.status === "accepted" ? res.batch_id : null,
     assertions: res.status === "accepted" && period ? candidate.assertions : [],
   });
@@ -283,15 +295,23 @@ async function recordImport(
   return outcome;
 }
 
-export async function importFile(caller: MrvCaller, t: string, f: string, file: { filename: string; bytes: Uint8Array }) {
+function mappingArg(value: unknown): ImportMapping | null {
+  if (value === null || value === undefined || value === "") return null;
+  const m = parseMapping(value);
+  if (!m) throw badRequest("Unknown import mapping");
+  return m;
+}
+
+export async function importFile(caller: MrvCaller, t: string, f: string, file: { filename: string; bytes: Uint8Array; mapping: unknown }) {
   const ctx = await requireFacility(caller, t, f, "upload.create");
+  const mapping = mappingArg(file.mapping);
   const name = file.filename;
   const isJson = /\.json$/i.test(name);
   if (!isJson && !/\.(xlsx|xlsm)$/i.test(name)) throw badRequest("Choose an .xlsx/.xlsm workbook or a TRACE FORCE MRV data export (.json)");
   const buf = file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer;
   const candidate = isJson ? parseDataPackage(new TextDecoder().decode(file.bytes), name) : parseWorkbook(buf, name);
   const mime = isJson ? "application/json" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-  return recordImport(caller, ctx, t, f, { origin: isJson ? "data-package" : "workbook", candidate, filename: name, bytes: file.bytes, mime });
+  return recordImport(caller, ctx, t, f, { origin: isJson ? "data-package" : "workbook", candidate, filename: name, bytes: file.bytes, mime, mapping });
 }
 
 function asInput(value: unknown): MrvInput {
@@ -310,36 +330,93 @@ function asInput(value: unknown): MrvInput {
 }
 
 export async function importManual(caller: MrvCaller, t: string, f: string, body: Record<string, unknown>) {
-  if (Object.keys(body).some((k) => k !== "input")) throw badRequest("Unknown field");
+  if (Object.keys(body).some((k) => k !== "input" && k !== "mapping")) throw badRequest("Unknown field");
   const ctx = await requireFacility(caller, t, f, "upload.create");
+  const mapping = mappingArg(body.mapping);
   const input = asInput(body.input);
   // Rows entered online get manual provenance; edited workbook rows keep their previous provenance chain.
   for (const s of ["production", "rawMaterial", "kilnFuel", "electricity", "inventory"] as const) {
     input[s] = input[s].map((r) => (r._source ? r : { ...r, _source: { origin: "manual" } satisfies RowSource }));
   }
-  return recordImport(caller, ctx, t, f, { origin: "manual", candidate: calculateStore(input, "manual"), filename: "Online entry" });
+  return recordImport(caller, ctx, t, f, { origin: "manual", candidate: calculateStore(input, "manual"), filename: "Online entry", mapping });
 }
 
 export async function importDemo(caller: MrvCaller, t: string, f: string) {
   const ctx = await requireFacility(caller, t, f, "upload.create");
   if (!ctx.synthetic) throw badRequest("Synthetic demo data can only be loaded into an organization marked as synthetic.");
-  return recordImport(caller, ctx, t, f, { origin: "demo", candidate: calculateStore(createSampleDataset(), "demo"), filename: "SYNTHETIC_DEMO_DATASET" });
+  // Documented source metadata of the synthetic fixture: every row is the total of the calendar month of its Date.
+  return recordImport(caller, ctx, t, f, {
+    origin: "demo",
+    candidate: calculateStore(createSampleDataset(), "demo"),
+    filename: "SYNTHETIC_DEMO_DATASET",
+    mapping: { version: MAPPING_VERSION, interval: "calendar_month_of_date" },
+  });
+}
+
+export async function withdrawReading(caller: MrvCaller, t: string, f: string, readingId: string, body: Record<string, unknown>) {
+  if (Object.keys(body).some((k) => k !== "reason")) throw badRequest("Unknown field");
+  await requireFacility(caller, t, f, "upload.create");
+  if (!isUuid(readingId)) throw notFound();
+  if (typeof body.reason !== "string" || body.reason.trim().length < 3 || body.reason.length > 500) throw badRequest("A reason (3–500 characters) is required");
+  const id = await executorRpc<string>(caller, "mrv_withdraw_reading", "withdraw", t, f, JSON.stringify({ reading_id: readingId, reason: body.reason.trim() }));
+  return { revisionId: id };
+}
+
+/** Every revision of a reading's source record (oldest first), including a superseded legacy (pre-mapping) revision. */
+export async function readingHistory(caller: MrvCaller, t: string, f: string, readingId: string) {
+  await requireFacility(caller, t, f, "facility.read");
+  if (!isUuid(readingId)) throw notFound();
+  const cols = "id, section, record_key, revision, is_current, quality_state, interval_start, interval_end, granularity, measurement_type, mapping_version, interval_basis, payload, batch_id, supersedes_id, received_at, superseded_at";
+  const one = await caller.db.from("activity_reading").select("section, record_key").eq("tenant_id", t).eq("facility_id", f).eq("id", readingId).maybeSingle();
+  if (one.error) throw dbFail(one.error);
+  if (!one.data) throw notFound();
+  const { data, error } = await caller.db
+    .from("activity_reading")
+    .select(cols)
+    .eq("tenant_id", t)
+    .eq("facility_id", f)
+    .eq("section", one.data.section)
+    .eq("record_key", one.data.record_key)
+    .order("revision");
+  if (error) throw dbFail(error);
+  const revisions = (data ?? []) as { supersedes_id: string | null; record_key: string }[];
+  const firstPrev = revisions[0]?.supersedes_id;
+  if (firstPrev) {
+    const prev = await caller.db.from("activity_reading").select(cols).eq("tenant_id", t).eq("facility_id", f).eq("id", firstPrev).maybeSingle();
+    if (prev.error) throw dbFail(prev.error);
+    if (prev.data) revisions.unshift(prev.data as (typeof revisions)[number]);
+  }
+  return revisions;
+}
+
+export async function listReportImpacts(caller: MrvCaller, t: string, f: string) {
+  await requireFacility(caller, t, f, "facility.read");
+  const { data, error } = await caller.db
+    .from("report_impact")
+    .select("id, report_id, run_id, batch_id, reason, created_at")
+    .eq("tenant_id", t)
+    .eq("facility_id", f)
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (error) throw dbFail(error);
+  return data ?? [];
 }
 
 // ───────────────────────── Calculations ─────────────────────────
-interface ReadingRow extends StoredReading {
-  synthetic: boolean;
-}
+type ReadingRow = StoredReading & { synthetic: boolean };
 
+const READING_COLUMNS =
+  "id, section, series_key, record_key, observed_on, interval_start, interval_end, granularity, measurement_type, mapping_version, quality_state, payload, synthetic, revision";
+
+/** Every CURRENT reading overlapping the range (incl. withdrawn/legacy): selection reports exclusions; the DB pins the set. */
 async function loadReadings(caller: MrvCaller, t: string, f: string, range: ResolvedRange): Promise<ReadingRow[]> {
   return fetchAll<ReadingRow>((from, to) =>
     caller.db
       .from("activity_reading")
-      .select("id, section, series_key, record_key, observed_on, interval_start, interval_end, granularity, payload, synthetic, revision", { count: "exact" })
+      .select(READING_COLUMNS, { count: "exact" })
       .eq("tenant_id", t)
       .eq("facility_id", f)
       .eq("is_current", true)
-      .eq("quality_state", "accepted")
       .lte("interval_start", range.end)
       .gte("interval_end", range.start)
       .order("id")
@@ -347,14 +424,39 @@ async function loadReadings(caller: MrvCaller, t: string, f: string, range: Reso
   );
 }
 
-function dominantOrigin(rows: StoredReading[]): DataOrigin {
-  const counts = new Map<DataOrigin, number>();
-  for (const r of rows) {
-    const o = (r.payload._source as RowSource | undefined)?.origin;
-    const origin = o && ORIGINS.includes(o) ? o : "manual";
-    counts.set(origin, (counts.get(origin) ?? 0) + 1);
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "manual";
+/** Series expected per meter/material: every mapped, accepted series seen in the 12 months up to the range end. */
+async function loadExpectedSeries(caller: MrvCaller, t: string, f: string, range: ResolvedRange): Promise<Record<string, string[]>> {
+  const rows = await fetchAll<{ section: string; series_key: string }>((from, to) =>
+    caller.db
+      .from("activity_reading")
+      .select("id, section, series_key", { count: "exact" })
+      .eq("tenant_id", t)
+      .eq("facility_id", f)
+      .eq("is_current", true)
+      .eq("quality_state", "accepted")
+      .not("mapping_version", "is", null)
+      .in("section", ["electricity", "rawMaterial"])
+      .lte("interval_start", range.end)
+      .gte("interval_end", addDays(range.end, -365))
+      .order("id")
+      .range(from, to) as unknown as PromiseLike<{ data: { section: string; series_key: string }[] | null; error: never; count: number | null }>
+  );
+  const out: Record<string, string[]> = {};
+  for (const r of rows) out[r.section] = [...new Set([...(out[r.section] ?? []), r.series_key])];
+  return out;
+}
+
+async function loadConfigDocs(caller: MrvCaller, t: string, f: string): Promise<ConfigDoc[]> {
+  return fetchAll<ConfigDoc>((from, to) =>
+    caller.db
+      .from("config_document")
+      .select("id, kind, content, effective_from, effective_to, created_at", { count: "exact" })
+      .eq("tenant_id", t)
+      .eq("facility_id", f)
+      .order("created_at")
+      .order("id")
+      .range(from, to) as unknown as PromiseLike<{ data: ConfigDoc[] | null; error: never; count: number | null }>
+  );
 }
 
 export async function calculateRange(
@@ -369,76 +471,43 @@ export async function calculateRange(
   if (!spec) throw badRequest("Invalid date range");
   const range = resolveRange(spec, { timezone: ctx.timezone, fiscalYearStartMonth: ctx.fiscalYearStartMonth });
 
-  const [readings, cfg] = await Promise.all([loadReadings(caller, t, f, range), caller.db.rpc("mrv_current_config", { p_tenant: t, p_facility: f })]);
-  if (cfg.error) throw dbFail(cfg.error);
-  const docs = (cfg.data ?? []) as { id: string; kind: ConfigKind; content: unknown }[];
-  const config: Partial<Record<ConfigKind, unknown>> = {};
-  for (const d of docs) if ((CONFIG_KINDS as readonly string[]).includes(d.kind)) config[d.kind] = d.content;
+  // A concurrent import between loading and finalizing is detected by the database (40001): reload and retry.
+  for (let attempt = 1; ; attempt++) {
+    const [readings, docs, expectedSeries] = await Promise.all([
+      loadReadings(caller, t, f, range),
+      loadConfigDocs(caller, t, f),
+      loadExpectedSeries(caller, t, f, range),
+    ]);
+    const plan = planRun({ readings, docs, range, facility: ctx, expectedSeries, triggerBatchId: opts.triggerBatchId, assertions: opts.assertions });
+    if (plan.kind === "none") return { view: null, coverage: plan.coverage, range, note: plan.note };
 
-  const selection = selectForRange(readings, range.start, range.end);
-  const setup = (config.setup ?? {}) as Record<string, unknown>;
-  const coverage = computeCoverage(selection, range, requiredSectionsFor(setup));
-  if (!selection.included.length) {
-    return { view: null, coverage, range, note: "No stored readings fall completely inside this range. Nothing was calculated; missing data is not treated as zero." };
+    // Same range, same pinned readings/considered set/config versions/engine/methodology/policies → reuse the stored run.
+    const existing = await caller.db
+      .from("calculation_run")
+      .select("id, run_invalidation (id)")
+      .eq("tenant_id", t)
+      .eq("facility_id", f)
+      .eq("dependency_sha256", plan.dependencySha)
+      .eq("engine_version", ENGINE_VERSION)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existing.error) throw dbFail(existing.error);
+    if (existing.data && !(existing.data.run_invalidation as unknown[] | null)?.length) {
+      return { view: await loadRun(caller, t, f, existing.data.id as string), coverage: plan.coverage, range, note: "Existing calculation reused (all inputs, versions and policies unchanged)." };
+    }
+
+    try {
+      const runId = await executorRpc<string>(caller, "mrv_finalize_run", "run", t, f, plan.body);
+      return { view: await loadRun(caller, t, f, runId), coverage: plan.coverage, range, note: null };
+    } catch (e) {
+      if (!(e instanceof HttpError && e.status === 409) || attempt >= 3) throw e;
+    }
   }
-
-  const included = selection.included;
-  const synthetic = ctx.synthetic || included.some((r) => r.synthetic);
-  const base = rebuildInput(included, config, { origin: dominantOrigin(included), synthetic, filename: `${ctx.code} · ${range.label}`, importedAt: null });
-  const input = scopeInputToRange(base, { start: range.start, end: range.end, label: `${range.label} (${range.start} – ${range.end})` });
-  const store = calculateStore(input, input.meta.origin);
-  store.assertions = opts.assertions ?? [];
-  const sha = inputSha(store.inputs);
-
-  // Re-opening the same range with unchanged inputs returns the existing immutable run instead of creating duplicates.
-  const existing = await caller.db
-    .from("calculation_run")
-    .select("id, run_invalidation (id)")
-    .eq("tenant_id", t)
-    .eq("facility_id", f)
-    .eq("range_start", range.start)
-    .eq("range_end", range.end)
-    .eq("input_sha256", sha)
-    .eq("engine_version", ENGINE_VERSION)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (existing.error) throw dbFail(existing.error);
-  if (existing.data && !(existing.data.run_invalidation as unknown[] | null)?.length) {
-    return { view: await loadRun(caller, t, f, existing.data.id as string), coverage, range, note: "Existing calculation reused (inputs unchanged)." };
-  }
-
-  const { data: runId, error } = await caller.db.rpc("mrv_record_run", {
-    p_tenant: t,
-    p_facility: f,
-    p_run: {
-      kind: "exploratory",
-      range_start: range.start,
-      range_end: range.end,
-      range_label: range.label,
-      timezone: range.timezone,
-      reporting_profile: "calendar",
-      engine_version: ENGINE_VERSION,
-      methodology_version: METHODOLOGY_VERSION,
-      input_snapshot: store.inputs,
-      input_sha256: sha,
-      results: resultsOf(store),
-      results_fingerprint: resultsFingerprint(store),
-      qa_overall: qaOverall(store),
-      completeness_pct: store.completeness.pct,
-      coverage,
-      trigger_batch_id: opts.triggerBatchId ?? null,
-    },
-    p_reading_ids: included.map((r) => r.id),
-    p_document_ids: docs.map((d) => d.id),
-    p_qa: qaRows(store),
-  });
-  if (error) throw dbFail(error);
-  return { view: await loadRun(caller, t, f, runId as string), coverage, range, note: null };
 }
 
 const RUN_COLUMNS =
-  "id, range_start, range_end, range_label, timezone, engine_version, methodology_version, input_sha256, qa_overall, synthetic, created_at, created_by, coverage, input_snapshot, results, results_fingerprint, run_invalidation (reason, created_at)";
+  "id, range_start, range_end, range_label, timezone, engine_version, methodology_version, input_sha256, results_sha256, dependency_sha256, qa_overall, synthetic, created_at, created_by, coverage, input_snapshot, results, results_fingerprint, run_invalidation (reason, created_at)";
 
 export async function loadRun(caller: MrvCaller, t: string, f: string, runId: string): Promise<RunView> {
   ids(t, f);
@@ -458,6 +527,8 @@ interface RunRow {
   engine_version: string;
   methodology_version: string;
   input_sha256: string;
+  results_sha256: string | null;
+  dependency_sha256: string | null;
   qa_overall: string;
   synthetic: boolean;
   created_at: string;
@@ -467,6 +538,16 @@ interface RunRow {
   results: RunResults;
   results_fingerprint: string;
   run_invalidation: { reason: string; created_at: string }[] | null;
+}
+
+function withRunRef(store: Store, row: RunRow, stale: boolean): Store {
+  return {
+    ...store,
+    meta: {
+      ...store.meta,
+      run: { id: row.id, input_sha256: row.input_sha256, results_sha256: row.results_sha256, engine_version: row.engine_version, created_at: row.created_at, stale },
+    },
+  };
 }
 
 function toRunView(caller: MrvCaller, row: RunRow): RunView {
@@ -481,6 +562,8 @@ function toRunView(caller: MrvCaller, row: RunRow): RunView {
       engine_version: row.engine_version,
       methodology_version: row.methodology_version,
       input_sha256: row.input_sha256,
+      results_sha256: row.results_sha256,
+      dependency_sha256: row.dependency_sha256,
       qa_overall: row.qa_overall,
       synthetic: row.synthetic,
       created_at: row.created_at,
@@ -490,7 +573,8 @@ function toRunView(caller: MrvCaller, row: RunRow): RunView {
       integrity: checkRunIntegrity(row),
       readings: row.coverage?.includedCount ?? 0,
     },
-    store: restoreStore(row.input_snapshot, row.results),
+    // Stored results are displayed as finalized — never replaced by a recomputation with the current engine.
+    store: withRunRef(restoreStore(row.input_snapshot, row.results), row, !!inv),
   };
 }
 

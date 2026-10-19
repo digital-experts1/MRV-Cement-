@@ -7,10 +7,31 @@ import { calculateStore } from "@/lib/calcEngine";
 import { parseWorkbook } from "@/lib/parser";
 import { createSampleDataset } from "@/lib/sampleData";
 import { resolveRange, validateSpec, zonedStartOfDayUtc, type RangeSpec } from "@/lib/mrv/dateRanges";
-import { rebuildInput, toConfigDrafts, toReadingDrafts, type StoredReading } from "@/lib/mrv/readings";
+import { rebuildInput, toConfigDrafts, toReadingDrafts, type ReadingSection, type StoredReading } from "@/lib/mrv/readings";
 import { computeCoverage, requiredSectionsFor, selectForRange } from "@/lib/mrv/rangeSelection";
 import { checkRunIntegrity, ENGINE_VERSION, inputSha, resultsFingerprint, resultsOf, restoreStore, scopeInputToRange } from "@/lib/mrv/snapshot";
+import { granularityOf, MAPPING_VERSION, type ImportMapping } from "@/lib/mrv/importMapping";
+import { deriveIntervals } from "@/lib/mrv/cumulative";
+import { planRun, selectConfig, type ConfigDoc } from "@/lib/mrv/executorPayload";
+import { sha256Json } from "@/lib/mrv/sha";
+import type { SheetRow } from "@/lib/types";
 import { buildWorkbook } from "../fixtures/synthetic";
+import { discrepancyRegister } from "../reference/reference";
+
+/** The synthetic fixture documents each row as the total of the calendar month of its Date. */
+const MONTHLY: ImportMapping = { version: MAPPING_VERSION, interval: "calendar_month_of_date" };
+const DAILY: ImportMapping = { version: MAPPING_VERSION, interval: "single_day_of_date" };
+
+/** Reference register for the synthetic fixture: application values are read from the stored-result shape. */
+export function syntheticRegister() {
+  const ds = createSampleDataset();
+  const store = calculateStore(ds, "demo");
+  const app: Record<string, number | null> = {};
+  for (const row of store.calcRows) app[String(row.Metric)] = typeof row.Value === "number" ? row.Value : null;
+  const mb04 = store.qaqc.find((x) => x["Check ID"] === "MB-04");
+  app["Stock movement closing difference"] = typeof mb04?.Result === "number" ? mb04.Result : null;
+  return discrepancyRegister(ds, app);
+}
 
 export interface MrvCase {
   id: string;
@@ -34,6 +55,23 @@ const r = (spec: RangeSpec, timezone = "UTC", fiscalYearStartMonth = 1) => resol
 let idSeq = 0;
 function stored(drafts: ReturnType<typeof toReadingDrafts>["readings"]): StoredReading[] {
   return drafts.map((d) => ({ ...d, id: `00000000-0000-4000-8000-${String(++idSeq).padStart(12, "0")}` }));
+}
+const ZERO_EXTRAS: Record<string, SheetRow> = { electricity: { "Self-generation MWh": 0, "Renewable MWh": 0 } };
+function storedRow(section: ReadingSection, series: string, start: string, end: string, values: SheetRow): StoredReading {
+  return {
+    id: `00000000-0000-4000-8000-${String(++idSeq).padStart(12, "0")}`,
+    section,
+    series_key: series,
+    record_key: `${series}|${start}..${end}|interval_total`,
+    observed_on: null,
+    interval_start: start,
+    interval_end: end,
+    granularity: granularityOf(start, end, "interval_total"),
+    measurement_type: "interval_total",
+    mapping_version: MAPPING_VERSION,
+    quality_state: "accepted",
+    payload: { ...(ZERO_EXTRAS[section] ?? {}), ...values, "Interval Start": start, "Interval End": end },
+  };
 }
 
 export const MRV_CASES: MrvCase[] = [
@@ -99,48 +137,66 @@ export const MRV_CASES: MrvCase[] = [
   },
   {
     id: "HS-01",
-    name: "Readings carry intervals: month-end dates are monthly summaries, other dates daily records",
+    name: "Intervals come only from an explicit mapping or row columns — never from 'last day of month'",
     run: () => {
-      const { readings, errors } = toReadingDrafts(createSampleDataset());
+      const { readings, errors } = toReadingDrafts(createSampleDataset(), MONTHLY);
       eq(errors, [], "no mapping errors");
       const jan = readings.find((x) => x.section === "production" && x.observed_on === "2025-01-31")!;
-      eq([jan.interval_start, jan.interval_end, jan.granularity], ["2025-01-01", "2025-01-31", "month"], "January production monthly");
-      const daily = toReadingDrafts({ ...createSampleDataset(), production: [{ ...createSampleDataset().production[0], Date: "2025-01-15" }] }).readings.find((x) => x.section === "production")!;
-      eq([daily.interval_start, daily.interval_end, daily.granularity], ["2025-01-15", "2025-01-15", "day"], "mid-month is daily");
+      eq([jan.interval_start, jan.interval_end, jan.granularity, jan.measurement_type, jan.interval_basis], ["2025-01-01", "2025-01-31", "month", "interval_total", "calendar_month_of_date"], "January production (declared monthly)");
+      eq(jan.mapping_version, MAPPING_VERSION, "mapping version stored");
+      // March 31 as a DAILY record: same date, explicit daily mapping → one day, not a month.
+      const mar31 = toReadingDrafts(createSampleDataset(), DAILY).readings.find((x) => x.section === "production" && x.observed_on === "2025-03-31")!;
+      eq([mar31.interval_start, mar31.interval_end, mar31.granularity], ["2025-03-31", "2025-03-31", "day"], "March 31 daily stays a day");
+      // No mapping and no interval columns → rejected, not guessed.
+      const none = toReadingDrafts(createSampleDataset(), null);
+      eq(none.readings.map((x) => [x.section, x.interval_basis]), [["inventory", "row_columns"]], "only the self-describing (Interval Start/End) row is accepted without a mapping");
+      ok(none.errors.length > 0 && none.errors.every((e) => /no import mapping was declared/.test(e)), "mapping error explains");
     },
   },
   {
     id: "HS-02",
-    name: "Re-import dedupe keys are stable; equal legitimate readings keep distinct occurrences; values change the content hash",
+    name: "Row interval columns are authoritative; inconsistent rows and unsupported measurement types are rejected",
     run: () => {
-      const a = toReadingDrafts(createSampleDataset()).readings;
-      const b = toReadingDrafts(createSampleDataset()).readings;
+      const ds = createSampleDataset();
+      ds.production = [{ ...ds.production[0], Date: null, "Interval Start": "2025-01-01", "Interval End": "2025-03-31" }];
+      ds.rawMaterial = [];
+      ds.kilnFuel = [];
+      ds.inventory = [];
+      ds.electricity = [{ ...ds.electricity[0], "Interval Start": "2025-02-01", "Interval End": "2025-02-28" }]; // Date 2025-01-31 outside
+      const res = toReadingDrafts(ds, null);
+      const prod = res.readings.find((x) => x.section === "production")!;
+      eq([prod.granularity, prod.interval_basis], ["quarter", "row_columns"], "declared quarter");
+      eq(res.errors.length, 1, "electricity row rejected");
+      ok(/outside the stated interval/.test(res.errors[0]), "date outside interval explained");
+      const cm = createSampleDataset();
+      cm.electricity[0]["Measurement Type"] = "cumulative meter";
+      ok(toReadingDrafts(cm, MONTHLY).errors.some((e) => /cumulative_meter/.test(e)), "cumulative register rows need a dedicated meter mapping");
+      eq(granularityOf("2024-02-01", "2024-02-29", "interval_total"), "month", "leap February is a month");
+      eq(granularityOf("2025-02-01", "2025-02-28", "interval_total"), "month", "non-leap February is a month");
+      eq(granularityOf("2024-02-01", "2024-02-28", "interval_total"), "custom", "Feb 1–28 in a leap year is NOT a month");
+    },
+  },
+  {
+    id: "HS-03",
+    name: "Re-import keys are stable; values change the content hash; provenance-only changes do not; same-series overlaps are errors",
+    run: () => {
+      const a = toReadingDrafts(createSampleDataset(), MONTHLY).readings;
+      const b = toReadingDrafts(createSampleDataset(), MONTHLY).readings;
       eq(a.map((x) => x.record_key + x.content_hash), b.map((x) => x.record_key + x.content_hash), "identical re-import → identical keys/hashes");
-      const twin = createSampleDataset();
-      twin.electricity.push({ ...twin.electricity[0] });
-      const keys = toReadingDrafts(twin).readings.filter((x) => x.section === "electricity" && x.observed_on === "2025-01-31").map((x) => x.record_key);
-      eq(keys.length, 2, "two equal readings are both kept");
-      ok(keys[0] !== keys[1], "distinct occurrences");
       const changed = createSampleDataset();
       changed.production[0]["Clinker Produced t"] = 175001;
-      const c = toReadingDrafts(changed).readings.find((x) => x.section === "production" && x.observed_on === "2025-01-31")!;
+      const c = toReadingDrafts(changed, MONTHLY).readings.find((x) => x.section === "production" && x.observed_on === "2025-01-31")!;
       const o = a.find((x) => x.section === "production" && x.observed_on === "2025-01-31")!;
       eq(c.record_key, o.record_key, "same source record key");
       ok(c.content_hash !== o.content_hash, "changed value → different hash (new revision)");
       const prov = createSampleDataset();
       prov.production[0]._source = { origin: "manual", previous: { origin: "workbook", file: "x.xlsx", row: 4 } };
-      eq(toReadingDrafts(prov).readings.find((x) => x.section === "production" && x.observed_on === "2025-01-31")!.content_hash, o.content_hash, "provenance-only change is not a revision");
-    },
-  },
-  {
-    id: "HS-03",
-    name: "Rows without a valid date are rejected, never guessed",
-    run: () => {
-      const bad = createSampleDataset();
-      bad.kilnFuel[0].Date = "1/2/2025";
-      const { errors } = toReadingDrafts(bad);
-      eq(errors.length, 1, "one error");
-      ok(/missing or invalid Date/.test(errors[0]), "error explains the date problem");
+      eq(toReadingDrafts(prov, MONTHLY).readings.find((x) => x.section === "production" && x.observed_on === "2025-01-31")!.content_hash, o.content_hash, "provenance-only change is not a revision");
+      const twin = createSampleDataset();
+      twin.electricity.push({ ...twin.electricity[0] });
+      const t = toReadingDrafts(twin, MONTHLY);
+      ok(t.errors.some((e) => /double count/.test(e)), "two totals of one meter for one month → validation error, not silent merge");
+      eq(o.legacy_key, "production|kiln 1|cem ii/a-l 42.5n|2025-01-31|#1", "legacy (Directive 05) key kept for auditable correction");
     },
   },
   {
@@ -149,7 +205,9 @@ export const MRV_CASES: MrvCase[] = [
     run: () => {
       const direct = parseWorkbook(buildWorkbook(), "synthetic.xlsx");
       ok(direct._valid, "workbook valid");
-      const rows = stored(toReadingDrafts(direct.inputs).readings);
+      const drafts = toReadingDrafts(direct.inputs, MONTHLY);
+      eq(drafts.errors, [], "workbook rows map");
+      const rows = stored(drafts.readings);
       const cfg = Object.fromEntries(toConfigDrafts(direct.inputs).map((d) => [d.kind, d.content]));
       const rebuilt = calculateStore(rebuildInput(rows, cfg, direct.inputs.meta), "workbook");
       eq(rebuilt.calcRows.map((x) => x.Value), direct.calcRows.map((x) => x.Value), "calculation values");
@@ -160,63 +218,193 @@ export const MRV_CASES: MrvCase[] = [
   },
   {
     id: "RS-01",
-    name: "Monthly totals are included only when fully inside the range; partial overlaps are excluded, not prorated",
+    name: "Partial ranges: totals are included only when fully inside; boundary-crossing totals are excluded and listed",
     run: () => {
-      const rows = stored(toReadingDrafts(createSampleDataset()).readings);
+      const rows = stored(toReadingDrafts(createSampleDataset(), MONTHLY).readings);
       const q1 = selectForRange(rows, "2025-01-01", "2025-03-31");
-      eq(q1.partial.length, 0, "Q1: no partial");
+      eq(q1.excluded.length, 0, "Q1: nothing excluded");
       eq(q1.included.length, rows.length, "Q1: all included");
       const mid = selectForRange(rows, "2025-01-15", "2025-02-28");
-      ok(mid.partial.every((x) => x.interval_start === "2025-01-01"), "January monthly rows are partial");
+      ok(mid.excluded.filter((x) => x.reason === "partial_overlap").every((x) => x.interval.startsWith("2025-01-01")), "January monthly rows are partial");
       ok(mid.included.every((x) => x.interval_start >= "2025-01-15"), "only fully-covered rows included");
-      ok(mid.partial.length > 0, "partials reported");
+      eq(mid.considered.length, mid.included.length + mid.excluded.length, "every overlapping reading is accounted for");
     },
   },
   {
     id: "RS-02",
-    name: "Daily records are excluded when a monthly total of the same series covers that month (no double counting)",
+    name: "March daily + March monthly of the same series: monthly used, dailies reconciled; disagreement is flagged, never silently dropped",
     run: () => {
-      const ds = createSampleDataset();
-      ds.electricity.push({ ...ds.electricity[0], Date: "2025-01-10", "Grid MWh": 1000 });
-      const rows = stored(toReadingDrafts(ds).readings);
-      const sel = selectForRange(rows, "2025-01-01", "2025-03-31");
-      eq(sel.supersededByMonthly.length, 1, "one daily excluded");
-      eq(sel.supersededByMonthly[0].observed_on, "2025-01-10", "the daily January record");
-      const other = createSampleDataset();
-      other.electricity.push({ ...other.electricity[0], "Meter / Source": "Aux meter M-02", Date: "2025-01-10" });
-      eq(selectForRange(stored(toReadingDrafts(other).readings), "2025-01-01", "2025-03-31").supersededByMonthly.length, 0, "different meter is not double counting");
+      const base = createSampleDataset();
+      const monthly = stored(toReadingDrafts(base, MONTHLY).readings).filter((x) => x.section === "electricity");
+      const mar = monthly.find((x) => x.interval_start === "2025-03-01")!;
+      const dailies: StoredReading[] = [];
+      for (let d = 1; d <= 31; d++) {
+        const day = `2025-03-${String(d).padStart(2, "0")}`;
+        dailies.push(storedRow("electricity", mar.series_key, day, day, { "Grid MWh": d === 31 ? 32500 - 30 * 1048 : 1048 }));
+      }
+      const sel = selectForRange([...monthly, ...dailies], "2025-03-01", "2025-03-31");
+      eq(sel.included.map((x) => x.id), [mar.id], "monthly total used once");
+      eq(sel.excluded.filter((x) => x.reason === "superseded_by_coarser_total").length, 31, "31 dailies excluded and listed");
+      eq(sel.reconciliations[0].status, "consistent", "Σ daily = monthly");
+      const bad = dailies.map((x, i) => (i === 30 ? { ...x, payload: { ...x.payload, "Grid MWh": 999 } } : x));
+      const sel2 = selectForRange([...monthly, ...bad], "2025-03-01", "2025-03-31");
+      eq(sel2.reconciliations[0].status, "discrepancy", "discrepancy flagged");
+      const range = r({ preset: "month", year: 2025, month: 3 });
+      ok(!computeCoverage(sel2, range, ["electricity"]).complete, "discrepancy blocks completeness");
+      // A March-31-only daily record alongside the monthly total: partial finer set → consistent coverage, flagged as partial.
+      const sel3 = selectForRange([...monthly, dailies[30]], "2025-03-01", "2025-03-31");
+      eq(sel3.reconciliations[0].status, "partial_finer", "single March 31 daily recognised as partial finer data");
     },
   },
   {
     id: "RS-03",
-    name: "Coverage reports missing months per required section; missing is never complete",
+    name: "Overlapping sources that do not nest (two totals for one period, partial overlaps) are conflicts: none used, range incomplete",
+    run: () => {
+      const s = "electricity|meter a";
+      const a = storedRow("electricity", s, "2025-01-01", "2025-01-31", { "Grid MWh": 100 });
+      const b = storedRow("electricity", s, "2025-01-01", "2025-01-31", { "Grid MWh": 120 });
+      const c = storedRow("electricity", s, "2025-01-20", "2025-02-10", { "Grid MWh": 50 });
+      const sel = selectForRange([a, b], "2025-01-01", "2025-01-31");
+      eq(sel.included.length, 0, "neither duplicate period total used");
+      eq(sel.conflicts.length, 1, "conflict reported");
+      const sel2 = selectForRange([a, c], "2025-01-01", "2025-02-28");
+      eq(sel2.conflicts.length, 1, "partial overlap reported as conflict");
+      const range = r({ preset: "custom", start: "2025-01-01", end: "2025-01-31" });
+      ok(!computeCoverage(sel, range, ["electricity"]).complete, "conflict blocks completeness");
+    },
+  },
+  {
+    id: "RS-04",
+    name: "Coverage is day-level and per expected meter: one record in a month is not 'covered'",
     run: () => {
       const ds = createSampleDataset();
       ds.electricity = ds.electricity.filter((x) => x.Date !== "2025-02-28");
-      const rows = stored(toReadingDrafts(ds).readings);
+      const rows = stored(toReadingDrafts(ds, MONTHLY).readings);
       const range = r({ preset: "quarter", year: 2025, quarter: 1 });
       const cov = computeCoverage(selectForRange(rows, range.start, range.end), range, requiredSectionsFor(ds.setup));
       eq(cov.missing, { electricity: ["2025-02"] }, "February electricity missing");
+      eq(cov.coverageThrough, "2025-01-31", "covered through end of January only");
       ok(!cov.complete, "incomplete");
-      eq(requiredSectionsFor({ "Selected calcination method": "Method A - raw meal" }).includes("rawMaterial"), true, "Method A requires raw material");
+      const one = [storedRow("electricity", "electricity|m1", "2025-02-10", "2025-02-10", { "Grid MWh": 1 })];
+      const feb = r({ preset: "month", year: 2025, month: 2 });
+      const cov2 = computeCoverage(selectForRange(one, feb.start, feb.end), feb, ["electricity"]);
+      eq(cov2.gaps[0].missingDays, 27, "27 of 28 days missing despite a record in the month");
+      const cov3 = computeCoverage(selectForRange(one, feb.start, feb.end), feb, ["electricity"], { expectedSeries: { electricity: ["electricity|m1", "electricity|m2"] } });
+      ok(cov3.gaps.some((g) => g.series_key === "electricity|m2" && g.missingDays === 28), "a meter seen before but silent now is missing");
+      const leap = r({ preset: "month", year: 2024, month: 2 });
+      const leapRow = [storedRow("electricity", "electricity|m1", "2024-02-01", "2024-02-28", { "Grid MWh": 1 })];
+      eq(computeCoverage(selectForRange(leapRow, leap.start, leap.end), leap, ["electricity"]).gaps[0].missingDays, 1, "leap day 2024-02-29 is missing");
+    },
+  },
+  {
+    id: "RS-05",
+    name: "Inventory balances need valid opening/closing anchors at range start/end and continuity between statements",
+    run: () => {
+      const s = "inventory|clinker";
+      const jan = storedRow("inventory", s, "2025-01-01", "2025-01-31", { "Opening Stock t": 100, "Closing Stock t": 110, "Purchased t": 0, "Dispatched t": 0 });
+      const feb = storedRow("inventory", s, "2025-02-01", "2025-02-28", { "Opening Stock t": 110, "Closing Stock t": 90, "Purchased t": 0, "Dispatched t": 0 });
+      eq(selectForRange([jan, feb], "2025-01-01", "2025-02-28").anchorIssues.length, 0, "chained statements accepted");
+      const febBad = { ...feb, payload: { ...feb.payload, "Opening Stock t": 105 } };
+      const sel = selectForRange([jan, febBad], "2025-01-01", "2025-02-28");
+      ok(/≠ previous closing/.test(sel.anchorIssues[0]?.detail ?? ""), "opening ≠ previous closing detected");
+      eq(sel.included.filter((x) => x.section === "inventory").length, 0, "broken chain not used");
+      ok(/no closing-stock anchor/.test(selectForRange([jan], "2025-01-01", "2025-02-28").anchorIssues[0]?.detail ?? ""), "missing closing anchor detected");
+    },
+  },
+  {
+    id: "CM-01",
+    name: "Cumulative meters: differences between registers; explicit resets/rollovers only; unexplained decreases are missing, not zero",
+    run: () => {
+      const res = deriveIntervals([
+        { id: "a", on: "2025-01-31", value: 1000 },
+        { id: "b", on: "2025-02-28", value: 1500 },
+        { id: "c", on: "2025-03-31", value: 200, reset: { finalBeforeReset: 1700, startAfterReset: 0 } },
+        { id: "d", on: "2025-04-30", value: 100 },
+      ]);
+      eq(res.intervals.map((x) => [x.start, x.end, x.total, x.basis]), [
+        ["2025-02-01", "2025-02-28", "500", "difference"],
+        ["2025-03-01", "2025-03-31", "400", "difference_with_reset"],
+      ], "differences and declared reset");
+      ok(res.issues.some((x) => /without a declared reset or rollover/.test(x.detail)), "unexplained decrease reported");
+      const roll = deriveIntervals([{ id: "a", on: "2025-01-31", value: 99990 }, { id: "b", on: "2025-02-28", value: 15 }], { rolloverAt: 100000 });
+      eq(roll.intervals[0].total, "25", "rollover with declared rollover value");
+    },
+  },
+  {
+    id: "CF-01",
+    name: "Configuration is selected by effective period covering the range, not by latest upload",
+    run: () => {
+      const doc = (id: string, kind: ConfigDoc["kind"], from: string | null, to: string | null, at: string, content: unknown = {}): ConfigDoc => ({ id, kind, content, effective_from: from, effective_to: to, created_at: at });
+      const docs = [
+        doc("s-q1", "setup", "2025-01-01", "2025-03-31", "2025-04-02T00:00:00Z"),
+        doc("c-q1", "constants", "2025-01-01", "2025-03-31", "2025-04-02T00:00:00Z", [{ v: "q1" }]),
+        doc("s-q2", "setup", "2025-04-01", "2025-06-30", "2025-07-02T00:00:00Z"),
+        doc("c-q2", "constants", "2025-04-01", "2025-06-30", "2025-07-02T00:00:00Z", [{ v: "q2" }]),
+      ];
+      const jan = selectConfig(docs, "2025-01-01", "2025-01-31");
+      eq(jan.chosen.map((d) => d.id).sort(), ["c-q1", "s-q1"], "January uses Q1 factors although Q2 was uploaded later");
+      eq(jan.gaps, [], "no gaps");
+      const h1 = selectConfig(docs, "2025-01-01", "2025-06-30");
+      ok(h1.gaps.some((g) => /different configuration versions apply/.test(g)), "range spanning two versions is not silently calculated");
+      const corrected = [...docs, doc("c-q1b", "constants", "2025-01-01", "2025-03-31", "2025-08-01T00:00:00Z", [{ v: "q1 corrected" }])];
+      eq(selectConfig(corrected, "2025-02-01", "2025-02-28").chosen.find((d) => d.kind === "constants")!.id, "c-q1b", "a later correction for the same period wins");
+      ok(selectConfig([doc("legacy", "setup", null, null, "2025-01-01T00:00:00Z")], "2025-01-01", "2025-01-31").gaps.some((g) => /without an effective period/.test(g)), "legacy undated config flagged");
+    },
+  },
+  {
+    id: "RN-01",
+    name: "Run plan pins readings, considered set and config versions; dependency hash changes when any dependency changes",
+    run: () => {
+      const ds = createSampleDataset();
+      const rows = stored(toReadingDrafts(ds, MONTHLY).readings).map((x) => ({ ...x, synthetic: true }));
+      const docs: ConfigDoc[] = toConfigDrafts(ds).map((d, i) => ({ id: `cfg-${i}`, kind: d.kind, content: d.content, effective_from: "2025-01-01", effective_to: "2025-03-31", created_at: "2025-04-01T00:00:00Z" }));
+      const range = r({ preset: "quarter", year: 2025, quarter: 1 });
+      const plan = planRun({ readings: rows, docs, range, facility: { code: "SYN", synthetic: true } });
+      ok(plan.kind === "run", "plan produced");
+      if (plan.kind !== "run") return;
+      const body = JSON.parse(plan.body);
+      eq(body.reading_ids.length, rows.length, "all readings pinned (incl. the explicitly quarterly inventory statement)");
+      eq(body.considered_ids.length, rows.length, "considered set pinned");
+      eq(body.run.engine_version, ENGINE_VERSION, "engine version recorded");
+      ok(body.input_snapshot.meta.synthetic === true && body.results.meta.synthetic === true, "synthetic labelled");
+      const again = planRun({ readings: rows, docs, range, facility: { code: "SYN", synthetic: true } });
+      ok(again.kind === "run" && again.dependencySha === plan.dependencySha, "deterministic dependency hash");
+      const withExtra = planRun({ readings: [...rows, { ...rows[0], id: "00000000-0000-4000-8000-999999999999", interval_start: "2025-01-01", interval_end: "2025-03-31", quality_state: "withdrawn" as const }], docs, range, facility: { code: "SYN", synthetic: true } });
+      ok(withExtra.kind === "run" && withExtra.dependencySha !== plan.dependencySha, "a new (even excluded) reading changes the dependency hash → no stale reuse");
+      const noConstants = planRun({ readings: rows, docs: docs.filter((d) => d.kind !== "constants"), range, facility: { code: "SYN", synthetic: true } });
+      ok(noConstants.kind === "none" && /constants/.test(noConstants.note), "no effective constants → not calculated (no silent defaults)");
+    },
+  },
+  {
+    id: "RF-01",
+    name: "Independent reference (no engine import) agrees with the application on the SYNTHETIC fixture — not a real-Q1 validation",
+    run: () => {
+      const rows = syntheticRegister();
+      const bad = rows.filter((x) => x.status === "discrepancy");
+      eq(bad, [], "no unexplained discrepancies on synthetic data");
+      ok(rows.find((x) => x.metric.startsWith("Product allocation"))?.status === "not_comparable", "product allocation gap reported, not hidden");
     },
   },
   {
     id: "SN-01",
-    name: "Snapshots: restored store equals the calculation; integrity re-computation matches; tampering is detected",
+    name: "Frozen results stay displayed after engine upgrades; recomputation is reported only as a comparison",
     run: () => {
-      const rows = stored(toReadingDrafts(createSampleDataset()).readings);
+      const rows = stored(toReadingDrafts(createSampleDataset(), MONTHLY).readings);
       const cfg = Object.fromEntries(toConfigDrafts(createSampleDataset()).map((d) => [d.kind, d.content]));
       const input = scopeInputToRange(rebuildInput(rows, cfg, { origin: "demo", synthetic: true, filename: "x", importedAt: null }), { start: "2025-01-01", end: "2025-03-31", label: "Q1" });
       const store = calculateStore(input, "demo");
-      const snap = JSON.parse(JSON.stringify({ input_snapshot: store.inputs, results: resultsOf(store), results_fingerprint: resultsFingerprint(store), engine_version: ENGINE_VERSION }));
+      const results = JSON.parse(JSON.stringify(resultsOf(store)));
+      const snap = JSON.parse(JSON.stringify({ input_snapshot: store.inputs, results, results_sha256: sha256Json(results), results_fingerprint: resultsFingerprint(store), engine_version: ENGINE_VERSION }));
       const restored = restoreStore(snap.input_snapshot, snap.results);
       eq(restored.calcRows, store.calcRows, "restored calculations");
       ok(restored.meta.synthetic, "synthetic flag persisted");
-      eq(checkRunIntegrity(snap), "verified_reproducible", "integrity ok");
-      const tampered = { ...snap, results_fingerprint: "0".repeat(64) };
-      eq(checkRunIntegrity(tampered), "mismatch", "tampered fingerprint detected");
-      eq(checkRunIntegrity({ ...snap, engine_version: "old" }), "engine_version_changed", "engine change flagged");
+      const same = checkRunIntegrity(snap);
+      eq([same.stored, same.sameEngine, same.recomputeMatches], ["intact", true, true], "same engine reproduces");
+      const old = checkRunIntegrity({ ...snap, engine_version: "trace-mrv-engine/2026.01-old" });
+      eq([old.stored, old.sameEngine], ["intact", false], "older engine: stored result intact, comparison only");
+      const altered = JSON.parse(JSON.stringify(snap));
+      altered.results.calcRows[0].Value = 1;
+      eq(checkRunIntegrity(altered).stored, "altered", "altered stored result detected by its finalization hash");
       eq(inputSha(store.inputs), inputSha(JSON.parse(JSON.stringify(store.inputs))), "input hash stable through JSON round-trip");
     },
   },

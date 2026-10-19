@@ -64,7 +64,7 @@ export function createSampleDataset(): MrvInput {
       { Date: "2025-03-31", "Meter / Source": "Main Substation M-01", "Grid MWh": 32500, "Grid EF tCO2/MWh": 0.4878, "Self-generation MWh": 0, "Self-generation EF": 0, "Renewable MWh": 0, "Evidence ID": "EV-ELEC-MAR" },
     ],
     inventory: [
-      { Date: "2025-03-31", Material: "Clinker", "Opening Stock t": 30000, "Purchased t": 0, "Dispatched t": 0, "Closing Stock t": 29800, "Evidence ID": "EV-STOCK-Q1" },
+      { Date: "2025-03-31", "Interval Start": "2025-01-01", "Interval End": "2025-03-31", Material: "Clinker", "Opening Stock t": 30000, "Purchased t": 0, "Dispatched t": 0, "Closing Stock t": 29800, "Evidence ID": "EV-STOCK-Q1" },
     ],
     constants: DEFAULT_CONSTANTS.map((r) => ({ ...r })),
     evidence: [

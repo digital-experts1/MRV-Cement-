@@ -2,7 +2,7 @@ import { badRequest, HttpError, notFound, unauthenticated } from "@/lib/server/a
 import { authenticateRequest, type MrvCaller } from "@/lib/server/supabase/auth";
 import {
   calculateRange, createOrganization, facilitySummary, getMe, importDemo, importFile, importManual, latestRun, listFacilities,
-  listImports, listRuns, loadRun, savePreference,
+  listImports, listReportImpacts, listRuns, loadRun, readingHistory, savePreference, withdrawReading,
 } from "./service";
 
 type Params = Record<string, string>;
@@ -42,9 +42,16 @@ const routes: [string, string, Handler][] = [
     async ({ caller, params, req, url }) => {
       const bytes = new Uint8Array(await req.arrayBuffer());
       if (!bytes.byteLength || bytes.byteLength > MAX_UPLOAD_BYTES) throw badRequest("Upload must be 1 byte – 20 MB");
-      return importFile(caller, params.t, params.f, { filename: url.searchParams.get("filename") ?? "upload.bin", bytes });
+      return importFile(caller, params.t, params.f, { filename: url.searchParams.get("filename") ?? "upload.bin", bytes, mapping: url.searchParams.get("mapping") });
     },
   ],
+  [
+    "POST",
+    "/orgs/:t/facilities/:f/readings/:id/withdraw",
+    async ({ caller, params, body }) => withdrawReading(caller, params.t, params.f, params.id, await body()),
+  ],
+  ["GET", "/orgs/:t/facilities/:f/readings/:id/history", ({ caller, params }) => readingHistory(caller, params.t, params.f, params.id)],
+  ["GET", "/orgs/:t/facilities/:f/report-impacts", ({ caller, params }) => listReportImpacts(caller, params.t, params.f)],
   ["POST", "/orgs/:t/facilities/:f/manual", async ({ caller, params, body }) => importManual(caller, params.t, params.f, await body())],
   ["POST", "/orgs/:t/facilities/:f/demo", ({ caller, params }) => importDemo(caller, params.t, params.f)],
   ["GET", "/orgs/:t/facilities/:f/runs", ({ caller, params }) => listRuns(caller, params.t, params.f)],

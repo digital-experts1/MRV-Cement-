@@ -2,6 +2,15 @@ import type { Coverage } from "./rangeSelection";
 import type { RangeSpec, ResolvedRange } from "./dateRanges";
 import type { Store } from "@/lib/types";
 
+/** Mirror of lib/mrv/snapshot.ts RunIntegrity (snapshot.ts is server-only). */
+export interface RunIntegrity {
+  stored: "intact" | "altered" | "unknown";
+  storedEngine: string;
+  currentEngine: string;
+  sameEngine: boolean;
+  recomputeMatches: boolean;
+}
+
 /** Shapes returned by /api/mrv (kept in sync with lib/server/mrv/service.ts). */
 export interface RunMeta {
   id: string;
@@ -12,13 +21,15 @@ export interface RunMeta {
   engine_version: string;
   methodology_version: string;
   input_sha256: string;
+  results_sha256: string | null;
+  dependency_sha256: string | null;
   qa_overall: string;
   synthetic: boolean;
   created_at: string;
   created_by_me: boolean;
   coverage: Coverage;
   stale: { reason: string; at: string } | null;
-  integrity: "verified_reproducible" | "engine_version_changed" | "mismatch";
+  integrity: RunIntegrity;
   readings: number;
 }
 

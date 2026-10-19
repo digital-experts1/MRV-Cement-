@@ -7,6 +7,7 @@ import { ApiError, mrvFetch } from "@/lib/apiClient";
 import { parseDate, rangeKey, resolveRange, todayIn, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
 import type { CalcResponse, FacilitySummary, ImportOutcome, MeResponse, RunMeta, RunView } from "@/lib/mrv/clientTypes";
 import type { Coverage } from "@/lib/mrv/rangeSelection";
+import type { IntervalMapping } from "@/lib/mrv/importMapping";
 import type { MrvInput } from "@/lib/types";
 import { createScopeGuard, LOCAL_SCOPE, scopeId, type ActiveScope } from "@/lib/tenancy/scopeKeys";
 
@@ -63,8 +64,8 @@ interface ScopeValue {
   selectFacility: (id: string) => void;
   selectRange: (spec: RangeSpec) => void;
   recalculate: () => void;
-  importFile: (file: File) => Promise<ImportOutcome | { accepted: false; errors: string[] }>;
-  saveManual: (input: MrvInput) => Promise<ImportOutcome>;
+  importFile: (file: File, mapping?: IntervalMapping | null) => Promise<ImportOutcome | { accepted: false; errors: string[] }>;
+  saveManual: (input: MrvInput, mapping?: IntervalMapping | null) => Promise<ImportOutcome>;
   loadDemo: () => Promise<ImportOutcome>;
   signOut: () => Promise<void>;
   reload: () => void;
@@ -152,14 +153,24 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
       setLoading(true);
       try {
         const q = encodeURIComponent(JSON.stringify(spec));
+        let calcUnavailable: string | null = null;
         if (f.permissions.includes("calculation.run")) {
-          const res = await mrvFetch<CalcResponse>(`/orgs/${t}/facilities/${f.id}/runs`, { method: "POST", json: { range: spec }, signal });
-          if (!isCurrent(token)) return;
-          showView(res.view, res.coverage, res.note);
-        } else {
+          try {
+            const res = await mrvFetch<CalcResponse>(`/orgs/${t}/facilities/${f.id}/runs`, { method: "POST", json: { range: spec }, signal });
+            if (!isCurrent(token)) return;
+            showView(res.view, res.coverage, res.note);
+            return;
+          } catch (e) {
+            // Trusted executor unavailable: stored runs remain readable.
+            if (!(e instanceof ApiError && e.status === 503)) throw e;
+            calcUnavailable = e.message;
+          }
+        }
+        {
           const res = await mrvFetch<{ view: RunView | null }>(`/orgs/${t}/facilities/${f.id}/runs/latest?range=${q}`, { signal });
           if (!isCurrent(token)) return;
-          showView(res.view, null, res.view ? null : "No stored calculation for this range. An MRV analyst or facility manager must calculate it.");
+          const fallback = res.view ? null : "No stored calculation for this range. An MRV analyst or facility manager must calculate it.";
+          showView(res.view, null, calcUnavailable ? `${calcUnavailable}${res.view ? " Showing the latest stored run." : ""}` : fallback);
         }
       } finally {
         if (isCurrent(token)) {
@@ -249,10 +260,16 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
 
   // Session changes in this or another tab (sign-in, sign-out, token refresh failure) restart the workspace.
   useEffect(() => {
-    const { data } = getBrowserSupabase().auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") setReloadTick((n) => n + 1);
-    });
-    return () => data.subscription.unsubscribe();
+    let unsubscribe = () => {};
+    try {
+      const { data } = getBrowserSupabase().auth.onAuthStateChange((event) => {
+        if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") setReloadTick((n) => n + 1);
+      });
+      unsubscribe = () => data.subscription.unsubscribe();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    return unsubscribe;
   }, []);
 
   const selectTenant = useCallback(
@@ -342,12 +359,13 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   );
 
   const importFile = useCallback(
-    async (file: File) => {
+    async (file: File, mapping?: IntervalMapping | null) => {
       if (!tenantId || !facility) return { accepted: false as const, errors: ["Sign in and select a factory before importing."] };
       if (!facility.permissions.includes("upload.create")) return { accepted: false as const, errors: ["You do not have permission to import data for this factory."] };
       const bytes = await file.arrayBuffer();
+      const m = mapping ? `&mapping=${encodeURIComponent(mapping)}` : "";
       return withImport((signal) =>
-        mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility.id}/imports?filename=${encodeURIComponent(file.name)}`, {
+        mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility.id}/imports?filename=${encodeURIComponent(file.name)}${m}`, {
           method: "POST",
           body: bytes,
           headers: { "content-type": "application/octet-stream" },
@@ -359,7 +377,10 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   );
 
   const saveManual = useCallback(
-    (input: MrvInput) => withImport((signal) => mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility?.id}/manual`, { method: "POST", json: { input }, signal })),
+    (input: MrvInput, mapping?: IntervalMapping | null) =>
+      withImport((signal) =>
+        mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility?.id}/manual`, { method: "POST", json: mapping ? { input, mapping } : { input }, signal })
+      ),
     [tenantId, facility, withImport]
   );
 
