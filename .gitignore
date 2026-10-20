@@ -7,6 +7,8 @@ Antigravity IDE.exe
 *.xlsm
 *.xls
 workbook_data.txt
+# Exception: the DEMO-labelled Q1 2025 workbook required by tests/q1Reconciliation.test.ts
+!tests/fixtures/q1-2025/TRACE_FORCE_MRV_Cement_QAQC_V28_Collection_Workbook_v0_2.xlsx
 
 # Environment & OS files (keep only the placeholder template in Git)
 .env
