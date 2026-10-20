@@ -8,6 +8,11 @@ import type { NextConfig } from "next";
  */
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // CloudLinux account process limits are lower than the host CPU count suggests.
+  // Bound Next.js page-data/static-generation workers to avoid spawn EAGAIN.
+  experimental: {
+    cpus: 1,
+  },
   agentRules: false,
   allowedDevOrigins: ["localhost", "127.0.0.1"],
   // PGlite ships a WASM Postgres build that must be loaded from node_modules, not bundled.
