@@ -1,0 +1,107 @@
+name: Part A validation (Vitest, build, secret scan, production smoke)
+# Separate from deploy.yml. Never runs on main, so it can never trigger or race the production deployment.
+# Run it from the Actions tab (Run workflow) or by pushing a branch named validation/<anything>.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["validation/**"]
+permissions:
+  contents: read
+concurrency:
+  group: part-a-validation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash # explicit bash = -eo pipefail, so `| tee` cannot hide a failing check
+    env:
+      FIXTURE: tests/fixtures/q1-2025/TRACE_FORCE_MRV_Cement_QAQC_V28_Collection_Workbook_v0_2.xlsx
+      # Non-secret placeholders: a local URL that is never contacted, and a dummy publishable key.
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-publishable-key
+      CANARY_VARS: MRV_EXECUTOR_KEY,DOWNLOAD_SIGNING_SECRET,SUPABASE_SERVICE_ROLE_KEY,MRV_E2E_A_PASSWORD,MRV_E2E_B_PASSWORD
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Record tested commit
+        run: echo "Tested commit $GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Repository hygiene (no env files, fixture tracked, no secret-shaped strings)
+        shell: bash
+        run: |
+          set -euo pipefail
+          envfiles=$(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -vx '.env.example' || true)
+          if [ -n "$envfiles" ]; then echo "Tracked env files:"; echo "$envfiles"; exit 1; fi
+          git ls-files --error-unmatch "$FIXTURE" > /dev/null
+          echo "DEMO fixture tracked: $FIXTURE"
+          # -l prints file names only, never the matched value.
+          hits=$(git grep -lIE 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|sb_secret_[A-Za-z0-9_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' || true)
+          if [ -n "$hits" ]; then echo "Secret-shaped strings in tracked files:"; echo "$hits"; exit 1; fi
+          echo "No tracked env files or secret-shaped strings"
+
+      - name: Install from lockfile
+        run: npm ci
+
+      - name: TypeScript
+        run: npx tsc --noEmit
+
+      - name: Vitest (all suites, including Q1 reconciliation)
+        run: npx vitest run --reporter=verbose --reporter=json --outputFile.json=vitest-results.json
+
+      - name: Assert Vitest results (Q1 reconciliation executed, none skipped)
+        if: always()
+        run: node scripts/check-vitest-results.mjs vitest-results.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate canary secrets (random, masked, never committed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in ${CANARY_VARS//,/ }; do
+            value="canary$(openssl rand -hex 24)"
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          done
+          echo "MRV_EXECUTOR_KEY_ID=ci-canary" >> "$GITHUB_ENV"
+
+      - name: Production build
+        run: npm run build
+
+      - name: No development/test code in production output
+        run: node scripts/check-prod-bundle.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: No secrets in production output (values not printed)
+        run: node scripts/check-prod-secrets.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Start production server and smoke test
+        shell: bash
+        env:
+          # Development flags deliberately set: production must still refuse every dev/test endpoint.
+          TRACE_SYNTHETIC_BACKEND: "1"
+          MRV_STAGING_E2E: "1"
+        run: |
+          set -euo pipefail
+          npx next start -p 3100 > next-start.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3100/signin; then break; fi
+            sleep 1
+          done
+          node scripts/prod-smoke.mjs http://127.0.0.1:3100 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Server log on failure
+        if: failure()
+        run: tail -n 100 next-start.log || true
+
+      - name: Upload Vitest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-results
+          path: vitest-results.json
+          if-no-files-found: warn
