@@ -1,3 +1,4 @@
+import { isAllowedRequestOrigin } from "@/lib/server/requestOrigin";
 import { badRequest, HttpError, notFound, unauthenticated } from "@/lib/server/authz/errors";
 import { authenticateRequest, type MrvCaller } from "@/lib/server/supabase/auth";
 import {
@@ -91,10 +92,7 @@ export async function dispatchMrv(req: Request, path: string): Promise<Response>
   let cookies: string[] = [];
   try {
     const method = req.method.toUpperCase();
-    if (method !== "GET" && method !== "HEAD") {
-      const origin = req.headers.get("origin");
-      if (origin && new URL(origin).host !== new URL(req.url).host) return respond(403, { error: "Cross-origin request rejected" });
-    }
+    if (!isAllowedRequestOrigin(req)) return respond(403, { error: "Cross-origin request rejected" });
     const auth = await authenticateRequest(req);
     cookies = auth.setCookies;
     if (!auth.caller) throw unauthenticated();

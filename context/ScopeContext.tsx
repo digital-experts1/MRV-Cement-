@@ -160,9 +160,10 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
             showView(res.view, res.coverage, res.note);
             return;
           } catch (e) {
-            // Trusted executor unavailable: stored runs remain readable.
-            if (!(e instanceof ApiError && e.status === 503)) throw e;
-            calcUnavailable = e.message;
+            // A failed write must not prevent an independently authorized read of saved results.
+            if (signal.aborted || !isCurrent(token) || (e instanceof ApiError && e.status === 401)) throw e;
+            calcUnavailable = e instanceof Error ? e.message : String(e);
+            setError(calcUnavailable);
           }
         }
         {
@@ -312,6 +313,7 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   const recalculate = useCallback(() => {
     if (!tenantId || !facility || !rangeSpec) return;
     const { token, signal } = beginSwitch();
+    setError(null);
     openRange(tenantId, facility, rangeSpec, token, signal).catch((e) => handleError(e, token));
   }, [tenantId, facility, rangeSpec, beginSwitch, openRange, handleError]);
 

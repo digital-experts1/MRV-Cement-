@@ -1,3 +1,4 @@
+import { isAllowedRequestOrigin } from "@/lib/server/requestOrigin";
 import type { Principal } from "@/lib/server/authz/authorize";
 import { badRequest, HttpError, notFound, unauthenticated } from "@/lib/server/authz/errors";
 import { asOwner } from "@/lib/server/db/context";
@@ -89,10 +90,7 @@ const devOnly = () => process.env.NODE_ENV !== "production";
 export async function dispatch(deps: ServerDeps, req: Request, path: string): Promise<Response> {
   try {
     const method = req.method.toUpperCase();
-    if (method !== "GET" && method !== "HEAD") {
-      const origin = req.headers.get("origin");
-      if (origin && new URL(origin).host !== new URL(req.url).host) return json(403, { error: "Cross-origin request rejected" });
-    }
+    if (!isAllowedRequestOrigin(req)) return json(403, { error: "Cross-origin request rejected" });
 
     // Development-only synthetic sign-in (no identity provider is configured yet). 404 in production.
     if (path === "/dev/users" && method === "GET") {
