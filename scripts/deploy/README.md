@@ -34,3 +34,9 @@ Previous and failed releases are retained for recovery and inspection; monitor d
 Public version: `https://cementmrv.traceforce.net/deployment-version.txt`. The deployed SHA must match the successful Actions run.
 
 PDF/Excel audit findings are separate existing work. This change preserves the server build fixes: Webpack, Node 22 types, and Next.js >=16.4.2 with a regenerated lockfile.
+
+## Public origin behind Apache
+
+Browser writes are checked against the exact public origin, not the internal Next.js loopback URL. Production defaults to `https://cementmrv.traceforce.net`; other installations must set server-only `MRV_APP_ORIGIN` in the shared environment before deployment. Include the scheme and non-default port, if any, and no path. Forwarded/Host headers do not expand this trust. Authentication and facility authorization remain required.
+
+After deployment, sign in, reopen the existing factory/reporting period and confirm saved results load without uploading again. Refresh and repeat. A failed recalculation can display the latest independently authorized stored run with a warning; it is not presented as a successful new calculation. No database migration or re-import is needed for this fix.

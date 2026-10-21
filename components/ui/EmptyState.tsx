@@ -1,18 +1,31 @@
 "use client";
 
 import { Icon } from "@/components/icons/Icon";
+import { useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 
 export function EmptyState({ title }: { title: string }) {
   const { openUpload } = useStore();
+  const scope = useScope();
+  const savedReadings = (scope.summary?.currentReadings ?? 0) > 0;
+  const message = scope.error
+    ? `Could not load this reporting range: ${scope.error}. Retry loading the saved data.`
+    : savedReadings
+      ? "This factory has saved readings. Select their reporting period or recalculate to display results."
+      : `Upload your TRACE FORCE MRV workbook to view ${title.toLowerCase()}.`;
 
   return (
     <div className="state-box">
       <div className="state-icon" style={{ color: "var(--accent)" }}>
         <Icon name="upload" size={40} />
       </div>
-      <div className="state-title">No data loaded yet</div>
-      <div className="state-sub">Upload your TRACE FORCE MRV workbook to view {title.toLowerCase()}.</div>
+      <div className="state-title">{scope.error ? "Unable to load saved data" : savedReadings ? "Saved readings available" : "No data loaded yet"}</div>
+      <div className="state-sub">{message}</div>
+      {scope.error || savedReadings ? (
+        <button type="button" className="btn btn-secondary" style={{ marginTop: 8 }} onClick={scope.reload}>
+          Retry loading saved data
+        </button>
+      ) : null}
       <button type="button" className="btn btn-primary" style={{ marginTop: 8 }} onClick={openUpload} aria-haspopup="dialog">
         <Icon name="upload" size={14} /> Upload Readings File
       </button>
