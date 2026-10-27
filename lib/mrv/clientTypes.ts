@@ -52,6 +52,7 @@ export interface ImportOutcome {
   errors: string[];
   counts: { inserted: number; revised: number; unchanged: number };
   duplicateOf: string | null;
+  period: { start: string; end: string } | null;
   run: RunView | null;
   runNote: string | null;
 }

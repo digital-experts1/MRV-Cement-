@@ -7,23 +7,45 @@ import { useStore } from "@/context/StoreContext";
 export function EmptyState({ title }: { title: string }) {
   const { openUpload } = useStore();
   const scope = useScope();
-  const savedReadings = (scope.summary?.currentReadings ?? 0) > 0;
-  const message = scope.error
-    ? `Could not load this reporting range: ${scope.error}. Retry loading the saved data.`
-    : savedReadings
-      ? "This factory has saved readings. Select their reporting period or recalculate to display results."
-      : `Upload your TRACE FORCE MRV workbook to view ${title.toLowerCase()}.`;
+  const hasRuns = !!scope.summary?.latestCalculation;
+  const readings = scope.summary?.currentReadings ?? 0;
+  const period = scope.range ? `${scope.range.label} (${scope.range.start} – ${scope.range.end})` : "the selected reporting period";
+  const readingsPeriod = scope.readingsPeriod;
+  const inReadingsPeriod = !!readingsPeriod && !!scope.range && readingsPeriod.start === scope.range.start && readingsPeriod.end === scope.range.end;
+
+  let heading = "No data loaded yet";
+  let message = `Upload your TRACE FORCE MRV workbook to view ${title.toLowerCase()}.`;
+  let action: { label: string; onClick: () => void } | null = null;
+  if (hasRuns) {
+    heading = "No saved results for this reporting period";
+    message = `This factory has saved calculation results, but none for ${period}.`;
+    action = { label: "Open latest saved results", onClick: scope.openLatestSaved };
+  } else if (readings > 0) {
+    heading = "Stored readings, no calculated results yet";
+    message = `This factory has ${readings} stored reading(s) (latest ${scope.summary?.latestObservation ?? "—"}), but no calculation has been saved. Readings are not results: a reporting period must be calculated first.`;
+    if (readingsPeriod && !inReadingsPeriod) action = { label: `Open ${readingsPeriod.label}`, onClick: scope.openReadingsPeriod };
+    else if (scope.canCalculate) action = { label: "Calculate this period", onClick: scope.recalculate };
+    else message += " An MRV analyst or facility manager must calculate it.";
+  } else if (scope.error) {
+    heading = "Unable to load saved data";
+    action = { label: "Retry loading saved data", onClick: scope.reload };
+  }
 
   return (
     <div className="state-box">
       <div className="state-icon" style={{ color: "var(--accent)" }}>
         <Icon name="upload" size={40} />
       </div>
-      <div className="state-title">{scope.error ? "Unable to load saved data" : savedReadings ? "Saved readings available" : "No data loaded yet"}</div>
+      <div className="state-title">{heading}</div>
       <div className="state-sub">{message}</div>
-      {scope.error || savedReadings ? (
-        <button type="button" className="btn btn-secondary" style={{ marginTop: 8 }} onClick={scope.reload}>
-          Retry loading saved data
+      {scope.error ? (
+        <div className="state-sub" role="alert">
+          Could not load saved data: {scope.error}
+        </div>
+      ) : null}
+      {action ? (
+        <button type="button" className="btn btn-secondary" style={{ marginTop: 8 }} onClick={action.onClick} disabled={scope.calculating}>
+          {action.label}
         </button>
       ) : null}
       <button type="button" className="btn btn-primary" style={{ marginTop: 8 }} onClick={openUpload} aria-haspopup="dialog">

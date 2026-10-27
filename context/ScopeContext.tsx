@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useStore } from "@/context/StoreContext";
 import { getBrowserSupabase } from "@/integrations/supabase/client";
 import { ApiError, mrvFetch } from "@/lib/apiClient";
-import { parseDate, rangeKey, resolveRange, todayIn, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
+import { parseDate, rangeKey, resolveRange, specForDates, todayIn, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
 import type { CalcResponse, FacilitySummary, ImportOutcome, MeResponse, RunMeta, RunView } from "@/lib/mrv/clientTypes";
 import type { Coverage } from "@/lib/mrv/rangeSelection";
 import type { MrvInput } from "@/lib/types";
@@ -54,7 +54,11 @@ interface ScopeValue {
   run: RunMeta | null;
   coverage: Coverage | null;
   runNote: string | null;
+  /** True while saved results are being read or a calculation is running. */
   calculating: boolean;
+  activity: "reading" | "calculating" | null;
+  /** Reporting period containing the factory's latest stored reading (null without readings). */
+  readingsPeriod: ResolvedRange | null;
   canCalculate: boolean;
   canImport: boolean;
   active: ActiveScope;
@@ -62,7 +66,12 @@ interface ScopeValue {
   selectTenant: (id: string) => void;
   selectFacility: (id: string) => void;
   selectRange: (spec: RangeSpec) => void;
+  /** Explicit write: calculate the selected range on the server. Saved results are kept if it fails. */
   recalculate: () => void;
+  /** Switch the reporting controls to the factory's latest saved run and display it. */
+  openLatestSaved: () => void;
+  /** Switch to the reporting period that contains the latest stored reading. */
+  openReadingsPeriod: () => void;
   importFile: (file: File, mapping?: string | null) => Promise<ImportOutcome | { accepted: false; errors: string[] }>;
   saveManual: (input: MrvInput, mapping?: string | null) => Promise<ImportOutcome>;
   loadDemo: () => Promise<ImportOutcome>;
@@ -73,6 +82,11 @@ interface ScopeValue {
 }
 
 const ScopeContext = createContext<ScopeValue | null>(null);
+
+/** Saved run for exactly this range (read-only; works without the calculation executor). */
+function readStored(t: string, f: string, spec: RangeSpec, signal?: AbortSignal) {
+  return mrvFetch<{ view: RunView | null }>(`/orgs/${t}/facilities/${f}/runs/latest?range=${encodeURIComponent(JSON.stringify(spec))}`, { signal });
+}
 
 function defaultRange(summary: FacilitySummary | null, timezone: string): RangeSpec {
   const latest = summary?.latestObservation ? parseDate(summary.latestObservation) : null;
@@ -98,13 +112,18 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   const [run, setRun] = useState<RunMeta | null>(null);
   const [coverage, setCoverage] = useState<Coverage | null>(null);
   const [runNote, setRunNote] = useState<string | null>(null);
-  const [calculating, setCalculating] = useState(false);
+  const [activity, setActivity] = useState<"reading" | "calculating" | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
 
   const facility = facilities.find((f) => f.id === facilityId) ?? null;
   const range = useMemo(() => (rangeSpec && facility ? resolveRange(rangeSpec, { timezone: facility.timezone }) : null), [rangeSpec, facility]);
   const canCalculate = !!facility?.permissions.includes("calculation.run");
   const canImport = !!facility?.permissions.includes("upload.create");
+  const readingsSpec = useMemo(
+    () => (facility && summary && summary.currentReadings > 0 && summary.latestObservation ? defaultRange(summary, facility.timezone) : null),
+    [facility, summary]
+  );
+  const readingsPeriod = useMemo(() => (readingsSpec && facility ? resolveRange(readingsSpec, { timezone: facility.timezone }) : null), [readingsSpec, facility]);
 
   /** New scope generation: aborts in-flight requests and clears the previous factory/range's dataset immediately. */
   const beginSwitch = useCallback(() => {
@@ -145,42 +164,29 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
     setError(e instanceof Error ? e.message : String(e));
   }, []);
 
-  /** Opens a range: calculators get a (re-used or new) persisted run; read-only users get the latest stored run. */
+  /** Opens a range by reading its saved run only. Calculating is a separate, explicit action (recalculate). */
   const openRange = useCallback(
     async (t: string, f: ScopeFacility, spec: RangeSpec, token: number, signal: AbortSignal) => {
-      setCalculating(true);
+      setActivity("reading");
       setLoading(true);
       try {
-        const q = encodeURIComponent(JSON.stringify(spec));
-        let calcUnavailable: string | null = null;
-        if (f.permissions.includes("calculation.run")) {
-          try {
-            const res = await mrvFetch<CalcResponse>(`/orgs/${t}/facilities/${f.id}/runs`, { method: "POST", json: { range: spec }, signal });
-            if (!isCurrent(token)) return;
-            showView(res.view, res.coverage, res.note);
-            return;
-          } catch (e) {
-            // A failed write must not prevent an independently authorized read of saved results.
-            if (signal.aborted || !isCurrent(token) || (e instanceof ApiError && e.status === 401)) throw e;
-            calcUnavailable = e instanceof Error ? e.message : String(e);
-            setError(calcUnavailable);
-          }
-        }
-        {
-          const res = await mrvFetch<{ view: RunView | null }>(`/orgs/${t}/facilities/${f.id}/runs/latest?range=${q}`, { signal });
-          if (!isCurrent(token)) return;
-          const fallback = res.view ? null : "No stored calculation for this range. An MRV analyst or facility manager must calculate it.";
-          showView(res.view, null, calcUnavailable ? `${calcUnavailable}${res.view ? " Showing the latest stored run." : ""}` : fallback);
-        }
+        const res = await readStored(t, f.id, spec, signal);
+        if (!isCurrent(token)) return;
+        showView(res.view, null, null);
       } finally {
         if (isCurrent(token)) {
-          setCalculating(false);
+          setActivity(null);
           setLoading(false);
         }
       }
     },
     [setLoading, showView]
   );
+
+  const refreshSummary = useCallback(async (t: string, f: string, token: number) => {
+    const s = await mrvFetch<FacilitySummary>(`/orgs/${t}/facilities/${f}/summary`).catch(() => null);
+    if (s && isCurrent(token)) setSummary(s);
+  }, []);
 
   const savePref = (t: string, f: string, spec: RangeSpec) => {
     void mrvFetch("/preference", { method: "PUT", json: { tenantId: t, facilityId: f, range: spec } }).catch(() => undefined);
@@ -312,10 +318,84 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
 
   const recalculate = useCallback(() => {
     if (!tenantId || !facility || !rangeSpec) return;
-    const { token, signal } = beginSwitch();
+    // New generation without clearing the display: saved results stay visible until a new run or a fresh authorized read replaces them.
+    abort.current?.abort();
+    abort.current = new AbortController();
+    const signal = abort.current.signal;
+    const token = guard.current.next();
+    const t = tenantId;
+    const f = facility;
+    const spec = rangeSpec;
     setError(null);
-    openRange(tenantId, facility, rangeSpec, token, signal).catch((e) => handleError(e, token));
-  }, [tenantId, facility, rangeSpec, beginSwitch, openRange, handleError]);
+    setActivity("calculating");
+    void (async () => {
+      try {
+        const res = await mrvFetch<CalcResponse>(`/orgs/${t}/facilities/${f.id}/runs`, { method: "POST", json: { range: spec }, signal });
+        if (!isCurrent(token)) return;
+        showView(res.view, res.coverage, res.note);
+        void refreshSummary(t, f.id, token);
+      } catch (e) {
+        if (signal.aborted || !isCurrent(token)) return;
+        if (e instanceof ApiError && e.status === 401) return handleError(e, token);
+        const reason = e instanceof Error ? e.message : String(e);
+        try {
+          const saved = await readStored(t, f.id, spec, signal);
+          if (!isCurrent(token)) return;
+          showView(
+            saved.view,
+            null,
+            saved.view
+              ? `Recalculation failed: ${reason} The saved results for this period are shown unchanged — they were not recalculated.`
+              : `Recalculation failed: ${reason} No saved results exist for this period.`
+          );
+        } catch (e2) {
+          handleError(e2, token);
+        }
+      } finally {
+        if (isCurrent(token)) setActivity(null);
+      }
+    })();
+  }, [tenantId, facility, rangeSpec, showView, refreshSummary, handleError]);
+
+  const openLatestSaved = useCallback(() => {
+    if (!tenantId || !facility) return;
+    const { token, signal } = beginSwitch();
+    const t = tenantId;
+    const f = facility;
+    setError(null);
+    setActivity("reading");
+    setLoading(true);
+    void (async () => {
+      try {
+        const res = await mrvFetch<{ view: RunView | null }>(`/orgs/${t}/facilities/${f.id}/runs/latest`, { signal });
+        if (!isCurrent(token)) return;
+        if (!res.view) {
+          setRunNote("No calculated results are stored for this factory yet. Stored readings must be calculated for a reporting period first.");
+          void refreshSummary(t, f.id, token);
+          return;
+        }
+        const r = res.view.run;
+        const spec = specForDates(r.range_start, r.range_end);
+        const resolved = resolveRange(spec, { timezone: f.timezone });
+        // Never label a run with a period other than its own.
+        if (resolved.start !== r.range_start || resolved.end !== r.range_end) throw new Error(`The saved run's period (${r.range_start} – ${r.range_end}) could not be selected.`);
+        setRangeSpec(spec);
+        savePref(t, f.id, spec);
+        showView(res.view, null, `Opened the latest saved results: ${resolved.label}, ${r.range_start} – ${r.range_end}.`);
+      } catch (e) {
+        handleError(e, token);
+      } finally {
+        if (isCurrent(token)) {
+          setActivity(null);
+          setLoading(false);
+        }
+      }
+    })();
+  }, [tenantId, facility, beginSwitch, showView, refreshSummary, handleError, setLoading]);
+
+  const openReadingsPeriod = useCallback(() => {
+    if (readingsSpec) selectRange(readingsSpec);
+  }, [readingsSpec, selectRange]);
 
   /** After an import the workspace shows the imported period's persisted run (or keeps the current view on rejection). */
   const afterImport = useCallback(
@@ -325,13 +405,30 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
       const s = await mrvFetch<FacilitySummary>(`/orgs/${tenantId}/facilities/${facility.id}/summary`).catch(() => null);
       if (!isCurrent(token)) return;
       if (s) setSummary(s);
+      const c = outcome.counts;
+      const head =
+        outcome.status === "duplicate"
+          ? "This file was already imported (duplicate) — no readings changed."
+          : `Import stored: ${c.inserted} new, ${c.revised} revised, ${c.unchanged} unchanged readings.`;
+      const note = (period: string) => [head, period, outcome.runNote].filter(Boolean).join(" ");
+      const r = outcome.run?.run;
+      const period = r ? { start: r.range_start, end: r.range_end } : outcome.period;
+      if (!period) {
+        setRunNote(note(""));
+        return;
+      }
+      const spec = specForDates(period.start, period.end);
+      setRangeSpec(spec);
+      savePref(tenantId, facility.id, spec);
+      const label = `Reporting period: ${period.start} – ${period.end}.`;
       if (outcome.run) {
-        const r = outcome.run.run;
-        const spec: RangeSpec = { preset: "custom", start: r.range_start, end: r.range_end };
-        setRangeSpec(spec);
-        savePref(tenantId, facility.id, spec);
-        showView(outcome.run, null, outcome.runNote);
-      } else if (outcome.runNote) setRunNote(outcome.runNote);
+        showView(outcome.run, null, note(label));
+        return;
+      }
+      // Stored but not calculated (no permission or calculation failed): show whatever is saved for the imported period.
+      const saved = await readStored(tenantId, facility.id, spec).catch(() => null);
+      if (!isCurrent(token)) return;
+      showView(saved?.view ?? null, null, note(label));
     },
     [tenantId, facility, showView]
   );
@@ -345,7 +442,7 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
       abort.current = new AbortController();
       const token = guard.current.next();
       const target = facility;
-      setCalculating(false);
+      setActivity(null);
       setLoading(true);
       try {
         // The import request itself is never aborted by a scope switch: the server commits it to the factory in its URL,
@@ -425,12 +522,13 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   const value = useMemo<ScopeValue>(
     () => ({
       status, error, user, memberships, tenantId, tenantPermissions, facilities, facilityId, facility, summary, rangeSpec, range, run,
-      coverage, runNote, calculating, canCalculate, canImport, active, activeKey: scopeId(active), selectTenant, selectFacility,
-      selectRange, recalculate, importFile, saveManual, loadDemo, signOut, reload, scopedFetch,
+      coverage, runNote, calculating: activity !== null, activity, readingsPeriod, canCalculate, canImport, active,
+      activeKey: scopeId(active), selectTenant, selectFacility, selectRange, recalculate, openLatestSaved, openReadingsPeriod, importFile,
+      saveManual, loadDemo, signOut, reload, scopedFetch,
     }),
     [status, error, user, memberships, tenantId, tenantPermissions, facilities, facilityId, facility, summary, rangeSpec, range, run,
-      coverage, runNote, calculating, canCalculate, canImport, active, selectTenant, selectFacility, selectRange, recalculate,
-      importFile, saveManual, loadDemo, signOut, reload, scopedFetch]
+      coverage, runNote, activity, readingsPeriod, canCalculate, canImport, active, selectTenant, selectFacility, selectRange, recalculate,
+      openLatestSaved, openReadingsPeriod, importFile, saveManual, loadDemo, signOut, reload, scopedFetch]
   );
 
   return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;

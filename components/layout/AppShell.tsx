@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
-import { useScope } from "@/context/ScopeContext";
+import { StaleScopeError, useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { ExplainerModal } from "@/components/ui/ExplainerModal";
 import { UploadPrompt } from "@/components/ui/UploadPrompt";
 import { DatasetBanner } from "@/components/ui/DatasetBanner";
+import { importFailureFrom, rejectedImport, scopeChangedDuringImport } from "@/lib/mrv/importFailure";
 import { Footer } from "./Footer";
 import { ScopeBar } from "./ScopeBar";
 import { Sidebar } from "./Sidebar";
@@ -38,12 +39,12 @@ export function AppShell({ children }: { children: ReactNode }) {
           importFile(file)
             .then((outcome) => {
               if (!outcome.accepted) {
-                setParseError(outcome.errors.join("\n"));
+                setParseError(rejectedImport(outcome.errors));
                 openUpload();
               }
             })
             .catch((e) => {
-              setParseError(e instanceof Error ? e.message : String(e));
+              setParseError(e instanceof StaleScopeError ? scopeChangedDuringImport(e.message) : importFailureFrom(e));
               openUpload();
             });
         }

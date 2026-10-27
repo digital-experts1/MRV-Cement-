@@ -27,7 +27,8 @@ export function RunStatus() {
       <div className="run-status-row">
         {s.calculating ? (
           <span className="scope-muted">
-            <span className="spinner spinner-sm" aria-hidden="true" /> Loading stored readings and calculating on the server…
+            <span className="spinner spinner-sm" aria-hidden="true" />{" "}
+            {s.activity === "calculating" ? "Calculating on the server from stored readings…" : "Loading saved results…"}
           </span>
         ) : s.run ? (
           <>
@@ -63,7 +64,7 @@ export function RunStatus() {
         </span>
         {s.canCalculate && !s.calculating ? (
           <button type="button" className="btn btn-secondary btn-sm" onClick={s.recalculate}>
-            {s.run?.stale ? "Recalculate (inputs changed)" : "Recalculate"}
+            {s.run?.stale ? "Recalculate (inputs changed)" : s.run ? "Recalculate" : "Calculate"}
           </button>
         ) : null}
       </div>

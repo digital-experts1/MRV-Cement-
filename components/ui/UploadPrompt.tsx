@@ -6,6 +6,7 @@ import { Icon } from "@/components/icons/Icon";
 import { StaleScopeError, useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { downloadBlankTemplate } from "@/lib/export";
+import { importFailureFrom, rejectedImport, scopeChangedDuringImport, type ImportFailure } from "@/lib/mrv/importFailure";
 import { MappingSelect } from "./MappingSelect";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), [tabindex]:not([tabindex="-1"])';
@@ -16,8 +17,7 @@ export function UploadPrompt() {
   const scope = useScope();
   const isSynthetic = scope.memberships.find((m) => m.tenantId === scope.tenantId)?.synthetic ?? false;
   const ready = scope.status === "ready" && !!scope.facility;
-  const [errors, setErrors] = useState<string[]>([]);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ImportFailure | null>(null);
   const [busy, setBusy] = useState(false);
   const [mapping, setMapping] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -29,7 +29,7 @@ export function UploadPrompt() {
     if (!uploadOpen) return;
     const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // Show errors from a page-level drag & drop that opened this dialog.
-    setErrors(parseError ? parseError.split("\n") : []);
+    setFailure(parseError);
     chooseRef.current?.focus();
     return () => trigger?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -55,36 +55,32 @@ export function UploadPrompt() {
 
   async function importFile(file: File) {
     if (!SUPPORTED.test(file.name)) {
-      setErrors([`"${file.name}" is not a supported file. Choose an .xlsx/.xlsm workbook or a TRACE FORCE MRV data export (.json).`]);
+      setFailure(rejectedImport([`"${file.name}" is not a supported file. Choose an .xlsx/.xlsm workbook or a TRACE FORCE MRV data export (.json).`]));
       return;
     }
-    setErrors([]);
-    setNotice(null);
+    setFailure(null);
     setBusy(true);
     try {
       const result = await scope.importFile(file, mapping || null);
       if (result.accepted) closeUpload();
-      else setErrors(result.errors);
+      else setFailure(rejectedImport(result.errors));
     } catch (e) {
       // The scope changed while the import was pending: report its real outcome for the original factory, not a failure.
-      if (e instanceof StaleScopeError) setNotice(e.message);
-      else setErrors([e instanceof Error ? e.message : String(e)]);
+      setFailure(e instanceof StaleScopeError ? scopeChangedDuringImport(e.message) : importFailureFrom(e));
     } finally {
       setBusy(false);
     }
   }
 
   async function loadSample() {
-    setErrors([]);
-    setNotice(null);
+    setFailure(null);
     setBusy(true);
     try {
       const result = await scope.loadDemo();
       if (result.accepted) closeUpload();
-      else setErrors(result.errors);
+      else setFailure(rejectedImport(result.errors));
     } catch (e) {
-      if (e instanceof StaleScopeError) setNotice(e.message);
-      else setErrors([e instanceof Error ? e.message : String(e)]);
+      setFailure(e instanceof StaleScopeError ? scopeChangedDuringImport(e.message) : importFailureFrom(e));
     } finally {
       setBusy(false);
     }
@@ -205,26 +201,22 @@ export function UploadPrompt() {
           {loading || busy ? "Uploading, validating, storing readings and calculating on the server…" : "or drag & drop the workbook onto this dialog"}
         </div>
 
-        {notice ? (
+        {failure?.kind === "scope" ? (
           <div className="dataset-banner dataset-banner-warn upload-notice" role="status">
-            {notice}
+            {failure.messages[0]}
           </div>
-        ) : null}
-
-        {errors.length > 0 ? (
-          <div className="error-banner upload-errors" role="alert">
+        ) : failure ? (
+          <div className="error-banner upload-errors" role="alert" data-failure-kind={failure.kind}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
               <Icon name="alert-triangle" size={16} />
-              <h3 style={{ margin: 0 }}>We couldn&apos;t import this workbook</h3>
+              <h3 style={{ margin: 0 }}>{failure.title}</h3>
             </div>
             <ul>
-              {errors.map((err) => (
+              {failure.messages.map((err) => (
                 <li key={err}>{err}</li>
               ))}
             </ul>
-            <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>
-              Any previously loaded data has been kept. Fix the file and try again.
-            </div>
+            <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>{failure.hint}</div>
           </div>
         ) : null}
 

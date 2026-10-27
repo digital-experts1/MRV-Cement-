@@ -194,6 +194,8 @@ export interface ImportOutcomeView {
   errors: string[];
   counts: { inserted: number; revised: number; unchanged: number };
   duplicateOf: string | null;
+  /** Reporting period the stored readings cover (declared, or the span of the readings). */
+  period: { start: string; end: string } | null;
   run: RunView | null;
   runNote: string | null;
 }
@@ -276,6 +278,7 @@ async function recordImport(
     errors,
     counts: { inserted: res.inserted, revised: res.revised, unchanged: res.unchanged },
     duplicateOf: res.duplicate_of ?? null,
+    period: res.status !== "rejected" && eff ? { start: eff.from, end: eff.to } : null,
     run: null,
     runNote: null,
   };
@@ -286,12 +289,18 @@ async function recordImport(
     outcome.runNote = "Imported. You do not have permission to run calculations; an MRV analyst or facility manager must calculate.";
     return outcome;
   }
-  const calc = await calculateRange(caller, t, f, { preset: "custom", start: eff.from, end: eff.to }, {
-    triggerBatchId: res.status === "accepted" ? res.batch_id : null,
-    assertions: res.status === "accepted" && period ? candidate.assertions : [],
-  });
-  outcome.run = calc.view;
-  outcome.runNote = calc.note;
+  // The readings are already committed: a failed follow-up calculation must not report the import itself as failed.
+  try {
+    const calc = await calculateRange(caller, t, f, { preset: "custom", start: eff.from, end: eff.to }, {
+      triggerBatchId: res.status === "accepted" ? res.batch_id : null,
+      assertions: res.status === "accepted" && period ? candidate.assertions : [],
+    });
+    outcome.run = calc.view;
+    outcome.runNote = calc.note;
+  } catch (e) {
+    if (!(e instanceof HttpError)) console.error("[mrv] post-import calculation failed", { message: e instanceof Error ? e.message : "unknown" });
+    outcome.runNote = `Readings were stored, but the calculation for this period failed: ${e instanceof HttpError ? e.message : "internal error"}. Use Recalculate once the problem is resolved.`;
+  }
   return outcome;
 }
 
@@ -578,22 +587,21 @@ function toRunView(caller: MrvCaller, row: RunRow): RunView {
   };
 }
 
-/** Latest stored run for exactly this range (read-only users can open results without recalculating). */
+/**
+ * Latest stored run for exactly this range, or — without a range — the factory's most recent stored run (to recover
+ * from an empty reporting period). Read-only: never needs the calculation executor.
+ */
 export async function latestRun(caller: MrvCaller, t: string, f: string, specInput: unknown) {
   const ctx = await requireFacility(caller, t, f, "facility.read");
-  const spec = validateSpec(specInput) as RangeSpec | null;
-  if (!spec) throw badRequest("Invalid date range");
-  const range = resolveRange(spec, { timezone: ctx.timezone, fiscalYearStartMonth: ctx.fiscalYearStartMonth });
-  const { data, error } = await caller.db
-    .from("calculation_run")
-    .select(RUN_COLUMNS)
-    .eq("tenant_id", t)
-    .eq("facility_id", f)
-    .eq("range_start", range.start)
-    .eq("range_end", range.end)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  let range: ResolvedRange | null = null;
+  if (specInput !== null) {
+    const spec = validateSpec(specInput) as RangeSpec | null;
+    if (!spec) throw badRequest("Invalid date range");
+    range = resolveRange(spec, { timezone: ctx.timezone, fiscalYearStartMonth: ctx.fiscalYearStartMonth });
+  }
+  let q = caller.db.from("calculation_run").select(RUN_COLUMNS).eq("tenant_id", t).eq("facility_id", f);
+  if (range) q = q.eq("range_start", range.start).eq("range_end", range.end);
+  const { data, error } = await q.order("created_at", { ascending: false }).order("id").limit(1).maybeSingle();
   if (error) throw dbFail(error);
   return { range, view: data ? toRunView(caller, data as unknown as RunRow) : null };
 }

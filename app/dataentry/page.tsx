@@ -257,7 +257,10 @@ export default function DataEntryPage() {
     } catch (e) {
       // Scope switched while saving: the server outcome is reported for the original factory, not as a failure.
       if (e instanceof StaleScopeError) setSubmitNotice(e.message);
-      else setSubmitError(e instanceof Error ? e.message : String(e));
+      else {
+        const failure = importFailureFrom(e);
+        setSubmitError(failure.kind === "server" ? `${failure.messages[0]} This is a server problem, not a problem with your entries.` : failure.messages[0]);
+      }
     } finally {
       setSubmitting(false);
     }

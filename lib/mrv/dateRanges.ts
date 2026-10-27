@@ -310,6 +310,23 @@ export function resolveRange(spec: RangeSpec, opts: ResolveOptions): ResolvedRan
 
 export const rangeKey = (r: { start: string; end: string }) => `${r.start}..${r.end}`;
 
+/**
+ * Selector spec for a stored range's exact dates: a calendar month/quarter/half/year when the dates match one exactly,
+ * otherwise a custom range. Resolving the result always yields exactly `start`..`end` (no relabelling of other dates).
+ */
+export function specForDates(start: string, end: string): RangeSpec {
+  const a = parseDate(start);
+  const b = parseDate(end);
+  if (!a || !b || end < start) throw new Error("Invalid stored range");
+  if (a.d === 1 && isLastDayOfMonth(end) && a.y === b.y) {
+    if (a.m === b.m) return { preset: "month", year: a.y, month: a.m };
+    if (a.m % 3 === 1 && b.m === a.m + 2) return { preset: "quarter", year: a.y, quarter: (a.m + 2) / 3 };
+    if ((a.m === 1 && b.m === 6) || (a.m === 7 && b.m === 12)) return { preset: "half", year: a.y, half: a.m === 1 ? 1 : 2 };
+    if (a.m === 1 && b.m === 12) return { preset: "year", year: a.y };
+  }
+  return { preset: "custom", start, end };
+}
+
 /** Months (YYYY-MM) touched by an inclusive date range. */
 export function monthsInRange(start: string, end: string): string[] {
   const a = parseDate(start)!;
