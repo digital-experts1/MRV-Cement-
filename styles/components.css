@@ -1148,3 +1148,60 @@
 .mapping-overrides summary { cursor: pointer; font-size: 11.5px; color: var(--text-muted); }
 .mapping-overrides[open] { display: flex; flex-direction: column; gap: 6px; }
 .mapping-overrides label span { font-size: 11px; }
+
+/* Data entry: a quiet workbench with a persistent section index. */
+.data-entry-studio .studio-header { padding: 24px; box-shadow: none; margin-bottom: 20px; }
+.data-entry-studio .studio-title-group h1 { font-size: 28px; letter-spacing: -.6px; }
+.data-entry-studio .studio-subtitle { max-width: 65ch; line-height: 1.6; }
+.data-entry-studio .studio-header-top { gap: 20px; }
+.studio-tools { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding-bottom: 16px; }
+.studio-muted { color: var(--text-secondary); font-size: 12px; }
+.studio-more { position: relative; font-size: 12px; color: var(--text-secondary); }
+.studio-more summary, .studio-mapping summary { cursor: pointer; padding: 8px 0; }
+.studio-tool-menu { position: absolute; right: 0; top: 100%; z-index: 5; min-width: 220px; padding: 12px; display: grid; gap: 8px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-lg); }
+.data-entry-studio .studio-progress-bar { max-width: 220px; }
+.data-entry-studio .studio-progress-text { white-space: normal; line-height: 1.6; }
+.studio-workspace { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; align-items: start; }
+.data-entry-studio .studio-tabs-bar { display: flex; flex-direction: column; position: sticky; top: 16px; gap: 4px; overflow: visible; border: 0; margin: 0; padding: 0; }
+.studio-nav-heading { font-size: 12px; color: var(--text-secondary); padding: 12px; }
+.data-entry-studio .studio-tab-btn { justify-content: space-between; padding: 12px; border: 1px solid transparent; border-radius: var(--r-sm); white-space: normal; text-align: left; min-height: 44px; }
+.data-entry-studio .studio-tab-btn.active { background: var(--bg-card); border-color: var(--accent-border); color: var(--accent-hover); box-shadow: inset 3px 0 var(--accent); }
+.data-entry-studio .studio-tab-badge { background: transparent; flex-shrink: 0; }
+.studio-editor { min-width: 0; }
+.studio-editor > .card { box-shadow: none; padding: 24px; }
+.studio-mapping { margin-bottom: 16px; border-bottom: 1px solid var(--border); padding: 0 0 8px; font-size: 13px; }
+.studio-mapping summary { color: var(--text-primary); font-weight: 600; }
+.studio-mapping summary span { color: var(--text-secondary); font-weight: 400; margin-left: 8px; font-size: 12px; }
+.studio-mapping-body { padding: 16px; margin-top: 8px; border: 1px solid var(--border); background: var(--bg-card); border-radius: var(--r); }
+.data-entry-studio .section-sub { max-width: 75ch; line-height: 1.6; }
+.data-entry-studio .form-field { gap: 8px; }
+.data-entry-studio .form-grid-2 { gap: 24px; }
+.data-entry-studio button:focus-visible, .data-entry-studio summary:focus-visible, .dataset-status summary:focus-visible, .run-status-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.dataset-status { background: var(--bg-card); border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 12px; }
+.dataset-status > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 20px; padding: 12px 24px; cursor: pointer; list-style: none; }
+.dataset-status > summary::-webkit-details-marker { display: none; }
+.dataset-status-link { margin-left: auto; color: var(--accent-hover); text-decoration: underline; text-underline-offset: 3px; }
+.dataset-status-body { padding: 0 24px 12px; max-width: 90ch; line-height: 1.65; }
+.dataset-status-body p { margin: 0 0 8px; }
+.dataset-status-body ul { margin: 0; padding-left: 20px; }
+.run-status-details > summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.run-status-details > summary span { margin-left: 16px; font-size: 11px; font-weight: 400; color: var(--text-secondary); }
+.run-status-details[open] > summary { margin-bottom: 12px; }
+@media (max-width: 1050px) {
+  .studio-workspace { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .data-entry-studio .studio-tabs-bar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); position: static; }
+  .studio-nav-heading { grid-column: 1 / -1; padding: 0 0 4px; }
+}
+@media (max-width: 600px) {
+  .data-entry-studio .studio-header, .studio-editor > .card { padding: 16px; }
+  .data-entry-studio .studio-title-group h1 { font-size: 24px; }
+  .data-entry-studio .studio-tabs-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .data-entry-studio .studio-header-top > .studio-actions-bar { width: 100%; }
+  .data-entry-studio .studio-header-top > .studio-actions-bar .btn { flex: 1 1 auto; min-height: 40px; }
+  .data-entry-studio .studio-progress-wrap { align-items: stretch; flex-direction: column; gap: 8px; }
+  .data-entry-studio .studio-progress-bar { flex: none; max-width: none; }
+  .studio-mapping summary span { display: block; margin: 6px 0 0; }
+  .dataset-status > summary { padding: 12px 16px; gap: 8px 12px; }
+  .dataset-status-verification { flex-basis: 100%; }
+  .run-status-details > summary span { display: block; margin: 6px 0 0; }
+}
