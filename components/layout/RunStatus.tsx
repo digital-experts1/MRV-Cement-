@@ -22,8 +22,14 @@ export function RunStatus() {
   const cov = s.coverage;
   const missing = cov ? Object.entries(cov.missing) : [];
 
+  const needsAttention = Boolean(s.run?.stale || s.run?.integrity.stored === "altered" ||
+    (s.run?.integrity.sameEngine && !s.run.integrity.recomputeMatches) ||
+    missing.length || cov?.conflicts?.length || cov?.configGaps?.length || cov?.anchorIssues?.length ||
+    cov?.reconciliations?.some((r) => r.status === "discrepancy"));
+
   return (
-    <div className="run-status" aria-live="polite">
+    <details className="run-status run-status-details">
+      <summary>{s.calculating ? "Calculating…" : s.run ? s.run.stale ? "Stored calculation needs updating" : "Stored calculation" : "No stored calculation"}<span>{s.run ? `${s.run.readings} readings · ${fmtTime(s.run.created_at)}` : "Import data to get started"}</span><span>{needsAttention ? "Needs attention · view details" : "Run details"}</span></summary>
       <div className="run-status-row">
         {s.calculating ? (
           <span className="scope-muted">
@@ -108,6 +114,6 @@ export function RunStatus() {
           {cov.extendsIntoFuture ? <span className="badge badge-warn">Range extends past today — partial period</span> : null}
         </div>
       ) : null}
-    </div>
+    </details>
   );
 }

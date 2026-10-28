@@ -73,7 +73,7 @@ export function ScopeBar() {
             <RangeSelector spec={s.rangeSpec} resolved={s.range} timezone={s.facility.timezone} onChange={s.selectRange} disabled={s.calculating} />
           </div>
         ) : null}
-        {tenant?.synthetic ? <span className="badge badge-fail" style={{ fontSize: 10.5 }}>SYNTHETIC ORG</span> : null}
+        {tenant?.synthetic ? <span className="badge badge-info" style={{ fontSize: 10.5 }}>Demo organization</span> : null}
         <span className="scope-user" title={s.user?.email}>
           {s.user?.displayName}
         </span>

@@ -80,7 +80,7 @@ function rowStatusBadge(status: unknown): string {
 
 export default function DataEntryPage() {
   const router = useRouter();
-  const { store } = useStore();
+  const { store, openUpload } = useStore();
   const { active, activeKey, saveManual, status: scopeStatus, canImport } = useScope();
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -269,59 +269,51 @@ export default function DataEntryPage() {
 
   const calc = (metric: string) => computedStore.calculations[metric]?.Value;
   const qaOverall = String(calc("QA/QC Overall Status") ?? "—");
+
   const qaBadgeClass = qaOverall === "PASS" ? "badge-pass" : qaOverall === "FAIL" ? "badge-fail" : "badge-warn";
 
   return (
-    <div className="page-container" style={{ paddingBottom: 60 }}>
+    <div className="page-container data-entry-studio" style={{ paddingBottom: 60 }}>
       {/* ── Studio Header ── */}
       <div className="studio-header">
         <div className="studio-header-top">
           <div className="studio-title-group">
             <h1>
               <Icon name="edit-3" size={22} className="text-accent" />
-              Online Data Entry Studio
+              Data entry
             </h1>
             <p className="studio-subtitle">
-              Enter cement plant MRV inputs. Calculations use the same engine as workbook import; blank values are reported as missing, never treated as zero.
+              Manage your plant data, then review the calculation before saving.
             </p>
           </div>
 
           <div className="studio-actions-bar">
-            {isSaved && (
-              <span className="badge badge-pass" style={{ fontSize: 11 }}>
-                <Icon name="check" size={12} /> Draft Saved
-              </span>
-            )}
-            {formData.meta.synthetic ? <span className="badge badge-fail" style={{ fontSize: 11 }}>SYNTHETIC DEMO</span> : null}
-            <span className={`badge ${qaBadgeClass}`} style={{ fontSize: 11 }}>
-              <QaDot status={qaOverall} /> QA/QC {qaOverall}
-            </span>
-
-            <button type="button" className="btn btn-secondary btn-sm" onClick={handleLoadSample} title="Pre-fill with fictitious synthetic demo values">
-              <Icon name="play" size={13} /> Load Synthetic Demo
+            <button type="button" className="btn btn-secondary" onClick={openUpload}>
+              <Icon name="upload" size={14} /> Import workbook
             </button>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => saveDraft()} title="Save draft to this browser (scoped by facility, period and dataset revision)">
-              <Icon name="save" size={13} /> Save Draft
+            <button type="button" className="btn btn-secondary" onClick={() => saveDraft()}>
+              <Icon name="save" size={14} /> {isSaved ? "Draft saved" : "Save draft"}
             </button>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={downloadBlankTemplate} title="Download blank Excel collection template">
-              <Icon name="download" size={13} /> Blank Template (.xlsx)
-            </button>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => downloadDataPackage(computedStore)} title="Re-importable data export with provenance">
-              <Icon name="file-spreadsheet" size={13} /> Export Data (.json)
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => void handleSubmit()}
-              disabled={submitting || scopeStatus !== "ready" || !canImport}
-              title={scopeStatus !== "ready" ? "Sign in and select a factory to store data" : !canImport ? "You do not have permission to submit data for this factory" : "Store readings and recalculate on the server"}
-            >
-              <Icon name="check-circle" size={13} /> {submitting ? "Saving…" : "Submit & Store"}
+            <button type="button" className="btn btn-primary" onClick={() => setActiveTab("review")}>
+              Review & save
             </button>
           </div>
         </div>
 
-        <MappingSelect id="dataentry-mapping" value={mapping} onChange={setMapping} />
+        <div className="studio-tools">
+          <div className="studio-actions-bar">
+            {formData.meta.synthetic ? <span className="badge badge-info">Synthetic demo</span> : null}
+            <span className="studio-muted">Local preview · QA/QC {qaOverall}</span>
+          </div>
+          <details className="studio-more">
+            <summary>Templates & tools</summary>
+            <div className="studio-tool-menu">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={downloadBlankTemplate}>Download blank template</button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => downloadDataPackage(computedStore)}>Export data package</button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={handleLoadSample}>Load synthetic demo</button>
+            </div>
+          </details>
+        </div>
 
         {/* Required-data completeness (separate from QA pass rate) */}
         <div className="studio-progress-wrap">
@@ -379,17 +371,19 @@ export default function DataEntryPage() {
       )}
 
       {/* ── Section Navigation Tabs ── */}
-      <div className="studio-tabs-bar">
+      <div className="studio-workspace">
+      <nav className="studio-tabs-bar" aria-label="Data entry sections">
+        <div className="studio-nav-heading">Workbook sections</div>
         {[
-          { key: "setup", label: "01 Setup & Facility", valid: sectionStatus.setup },
-          { key: "production", label: "03 Production", valid: sectionStatus.production },
-          { key: "rawmaterial", label: "04 Raw Materials", valid: sectionStatus.rawmaterial },
-          { key: "kilnfuel", label: "05 Kiln Fuels", valid: sectionStatus.kilnfuel },
-          { key: "electricity", label: "06 Electricity", valid: sectionStatus.electricity },
-          { key: "inventory", label: "14 Inventory", valid: sectionStatus.inventory },
-          { key: "constants", label: "07 Factors & Bounds", valid: sectionStatus.constants },
-          { key: "evidence", label: "11 Evidence Register", valid: sectionStatus.evidence },
-          { key: "review", label: "Review & Validate", valid: computedStore.readiness.status === "READY_FOR_INTERNAL_REVIEW" },
+          { key: "setup", label: "Setup & facility", valid: sectionStatus.setup },
+          { key: "production", label: "Production", valid: sectionStatus.production },
+          { key: "rawmaterial", label: "Raw materials", valid: sectionStatus.rawmaterial },
+          { key: "kilnfuel", label: "Kiln fuels", valid: sectionStatus.kilnfuel },
+          { key: "electricity", label: "Electricity", valid: sectionStatus.electricity },
+          { key: "inventory", label: "Inventory", valid: sectionStatus.inventory },
+          { key: "constants", label: "Factors & bounds", valid: sectionStatus.constants },
+          { key: "evidence", label: "Evidence register", valid: sectionStatus.evidence },
+          { key: "review", label: "Review & save", valid: computedStore.readiness.status === "READY_FOR_INTERNAL_REVIEW" },
         ].map((tab) => {
           const isActive = activeTab === tab.key;
           return (
@@ -397,14 +391,21 @@ export default function DataEntryPage() {
               key={tab.key}
               type="button"
               className={`studio-tab-btn${isActive ? " active" : ""}`}
+              aria-current={isActive ? "step" : undefined}
+              aria-controls="studio-editor"
               onClick={() => setActiveTab(tab.key as TabKey)}
             >
               <span>{tab.label}</span>
-              <span className="studio-tab-badge">{tab.valid ? "✓" : "•"}</span>
+              <span className="studio-tab-badge" aria-label={tab.valid ? "Complete" : "Needs review"}>{tab.valid ? "✓" : "•"}</span>
             </button>
           );
         })}
-      </div>
+      </nav>
+      <div className="studio-editor" id="studio-editor">
+        <details className="studio-mapping">
+          <summary>Period & unit settings <span>Use when your rows do not include declarations</span></summary>
+          <div className="studio-mapping-body"><MappingSelect id="dataentry-mapping" value={mapping} onChange={setMapping} /></div>
+        </details>
 
       {/* ── TAB 1: Setup & Governance ── */}
       {activeTab === "setup" && (
@@ -430,12 +431,13 @@ export default function DataEntryPage() {
               ] as { key: string; label: string; required?: boolean; type?: string; placeholder?: string; options?: string[][] }[]
             ).map((f) => (
               <div className="form-field" key={f.key}>
-                <label>
+                <label htmlFor={`setup-${f.key}`}>
                   {f.label} {f.required ? <span className="required">*</span> : null}
                 </label>
                 {f.options ? (
-                  <select className="form-select" value={raw(formData.setup, f.key)} onChange={(e) => updateSetup(f.key, e.target.value)}>
+                  <select id={`setup-${f.key}`} className="form-select" value={raw(formData.setup, f.key)} onChange={(e) => updateSetup(f.key, e.target.value)}>
                     <option value="">— select —</option>
+                    {raw(formData.setup, f.key) && !f.options.some(([v]) => v === raw(formData.setup, f.key)) ? <option value={raw(formData.setup, f.key)}>{raw(formData.setup, f.key)}</option> : null}
                     {f.options.map(([v, l]) => (
                       <option key={v} value={v}>
                         {l}
@@ -443,7 +445,7 @@ export default function DataEntryPage() {
                     ))}
                   </select>
                 ) : (
-                  <input type={f.type} className="form-input" placeholder={f.placeholder} value={raw(formData.setup, f.key)} onChange={(e) => updateSetup(f.key, e.target.value)} />
+                  <input id={`setup-${f.key}`} type={f.type} className="form-input" placeholder={f.placeholder} value={raw(formData.setup, f.key)} onChange={(e) => updateSetup(f.key, e.target.value)} />
                 )}
               </div>
             ))}
@@ -771,11 +773,11 @@ export default function DataEntryPage() {
                 label: "Mapped Sheet",
                 type: "select",
                 options: [
-                  { value: "03_Production_Input", label: "03 Production" },
-                  { value: "04_Raw_Material_Input", label: "04 Raw Materials" },
-                  { value: "05_Kiln_Fuel_Input", label: "05 Kiln Fuels" },
-                  { value: "06_Electricity_Input", label: "06 Electricity" },
-                  { value: "14_Inventory_Movements", label: "14 Inventory" },
+                  { value: "03_Production_Input", label: "Production" },
+                  { value: "04_Raw_Material_Input", label: "Raw materials" },
+                  { value: "05_Kiln_Fuel_Input", label: "Kiln fuels" },
+                  { value: "06_Electricity_Input", label: "Electricity" },
+                  { value: "14_Inventory_Movements", label: "Inventory" },
                 ],
               },
               {
@@ -913,9 +915,9 @@ export default function DataEntryPage() {
           <div className="card" style={{ background: "#F8FAFC", border: "1px solid var(--border)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
               <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>Apply this dataset?</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>Save this dataset?</div>
                 <div style={{ fontSize: 12.5, color: "var(--text-secondary)" }}>
-                  Submitting loads these inputs into the platform. Applying does not approve or verify the dataset.
+                  Save readings and recalculate for the selected factory and reporting range. This does not approve or verify the dataset.
                 </div>
               </div>
 
@@ -926,14 +928,16 @@ export default function DataEntryPage() {
                 <button type="button" className="btn btn-secondary" onClick={() => downloadExcel(computedStore)}>
                   <Icon name="download" size={14} /> Report (.xlsx)
                 </button>
-                <button type="button" className="btn btn-primary" onClick={handleSubmit}>
-                  <Icon name="check-circle" size={15} /> Submit Data & Update Platform
+                <button type="button" className="btn btn-primary" onClick={handleSubmit} disabled={submitting || scopeStatus !== "ready" || !canImport} title={scopeStatus !== "ready" ? "Sign in and select a factory to save data" : !canImport ? "Your role cannot save data for this factory" : "Store readings and recalculate"}>
+                  <Icon name="check-circle" size={15} /> {submitting ? "Saving…" : "Save & calculate"}
                 </button>
               </div>
             </div>
           </div>
         </div>
       )}
+      </div>
+      </div>
     </div>
   );
 }
