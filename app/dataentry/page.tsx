@@ -11,6 +11,7 @@ import { useStore } from "@/context/StoreContext";
 import { calculateStore, DEFAULT_FUEL_FACTORS, DEFAULT_CONSTANTS } from "@/lib/calcEngine";
 import { createSampleDataset } from "@/lib/sampleData";
 import { downloadExcel, downloadBlankTemplate, downloadDataPackage } from "@/lib/export";
+import { importFailureFrom } from "@/lib/mrv/importFailure";
 import { DRAFT_KEY, LEGACY_DRAFT_KEY, describeDraft, makeDraft, readDraft, resolveDraft, type DraftRecord } from "@/lib/draft";
 import { scopedDraftKey } from "@/lib/tenancy/scopeKeys";
 import type { MrvInput, RowSource, SheetRow } from "@/lib/types";

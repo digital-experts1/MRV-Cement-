@@ -25,7 +25,8 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${jetbrains.variable}`}>
-      <body className={inter.className}>
+      {/* Browser extensions (e.g. Grammarly) add attributes to <body> before hydration; this only silences attribute diffs on this element. */}
+      <body className={inter.className} suppressHydrationWarning>
         <Providers>{children}</Providers>
       </body>
     </html>
