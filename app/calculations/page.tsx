@@ -240,7 +240,7 @@ function CalculationsContent({ s }: { s: Store }) {
               </tbody>
             </table>
           </div>
-        </div>
+        </div> : null}
       </div>
     </>
   );
