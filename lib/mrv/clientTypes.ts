@@ -29,6 +29,8 @@ export interface RunMeta {
   created_by_me: boolean;
   coverage: Coverage;
   stale: { reason: string; at: string } | null;
+  /** True when this run predates the facility's dataset archive: history only, never auto-selected. */
+  archived: boolean;
   integrity: RunIntegrity;
   readings: number;
 }
@@ -68,4 +70,6 @@ export interface FacilitySummary {
   latestImport: string | null;
   latestCalculation: string | null;
   currentReadings: number;
+  /** Latest dataset archive of this facility (shown so an empty dashboard explains itself). */
+  archive: { reason: string; at: string } | null;
 }

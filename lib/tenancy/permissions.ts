@@ -38,14 +38,15 @@ export const PERMISSIONS = [
   "ai.assess",
   "scenario.manage",
   "audit.read",
-  "members.manage",
-] as const;
+    "members.manage",
+    "dataset.archive",
+  ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 const CONTRIBUTOR_BASE: Permission[] = ["facility.read", "upload.create", "evidence.read", "evidence.write"];
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
-  tenant_admin: ["facility.read", "period.manage", "members.manage", "audit.read", "report.read", "evidence.read"],
+  tenant_admin: ["facility.read", "period.manage", "members.manage", "audit.read", "report.read", "evidence.read", "dataset.archive"],
   facility_manager: [
     "facility.read", "period.manage", "upload.create", "activity.write.production", "activity.write.utilities",
     "activity.write.laboratory", "mapping.manage", "calculation.run", "evidence.read", "evidence.write",

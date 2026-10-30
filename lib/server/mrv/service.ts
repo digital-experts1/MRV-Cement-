@@ -50,6 +50,8 @@ export interface RunMeta {
   created_by_me: boolean;
   coverage: Coverage;
   stale: { reason: string; at: string } | null;
+  /** True when this run predates the facility's dataset archive: history only, never auto-selected. */
+  archived: boolean;
   integrity: RunIntegrity;
   readings: number;
 }
@@ -140,14 +142,26 @@ export async function listFacilities(caller: MrvCaller, t: string) {
 
 export async function facilitySummary(caller: MrvCaller, t: string, f: string) {
   await requireFacility(caller, t, f, "facility.read");
-  const { data, error } = await caller.db.rpc("mrv_facility_summary", { p_tenant: t, p_facility: f });
-  if (error) throw dbFail(error);
-  const s = (Array.isArray(data) ? data[0] : data) ?? {};
+  const [sum, archive] = await Promise.all([
+    caller.db.rpc("mrv_facility_summary", { p_tenant: t, p_facility: f }),
+    caller.db
+      .from("dataset_archive")
+      .select("reason, cutoff")
+      .eq("tenant_id", t)
+      .eq("facility_id", f)
+      .order("cutoff", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  if (sum.error) throw dbFail(sum.error);
+  if (archive.error) throw dbFail(archive.error);
+  const s = (Array.isArray(sum.data) ? sum.data[0] : sum.data) ?? {};
   return {
     latestObservation: s.latest_observation ?? null,
     latestImport: s.latest_import ?? null,
     latestCalculation: s.latest_calculation ?? null,
     currentReadings: Number(s.current_readings ?? 0),
+    archive: archive.data ? { reason: archive.data.reason as string, at: archive.data.cutoff as string } : null,
   };
 }
 
@@ -166,6 +180,7 @@ export async function savePreference(caller: MrvCaller, body: Record<string, unk
 
 export async function listImports(caller: MrvCaller, t: string, f: string) {
   await requireFacility(caller, t, f, "facility.read");
+  const cutoff = await archiveCutoff(caller, t, f);
   const { data, error } = await caller.db
     .from("import_batch")
     .select("id, origin, status, filename, sha256, size_bytes, received_at, inserted_count, revised_count, unchanged_count, errors, synthetic, duplicate_of, declared_period_start, declared_period_end")
@@ -175,10 +190,24 @@ export async function listImports(caller: MrvCaller, t: string, f: string) {
     .order("id")
     .limit(50);
   if (error) throw dbFail(error);
-  return data ?? [];
+  return (data ?? []).map((b) => ({ ...b, archived: cutoff !== null && new Date(b.received_at as string) <= cutoff }));
 }
 
 // ───────────────────────── Trusted executor ─────────────────────────
+/** Cutoff of the facility's latest dataset archive: rows created before it are history-only (null = no archive). */
+async function archiveCutoff(caller: MrvCaller, t: string, f: string): Promise<Date | null> {
+  const { data, error } = await caller.db
+    .from("dataset_archive")
+    .select("cutoff")
+    .eq("tenant_id", t)
+    .eq("facility_id", f)
+    .order("cutoff", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw dbFail(error);
+  return data ? new Date(data.cutoff as string) : null;
+}
+
 async function executorRpc<T>(caller: MrvCaller, fn: string, purpose: ExecutorPurpose, t: string, f: string, body: string): Promise<T> {
   const auth = signExecutorRequest(executorKey(), purpose, { userId: caller.user.id, tenantId: t, facilityId: f }, body);
   const { data, error } = await caller.db.rpc(fn, { p_tenant: t, p_facility: f, p_body: body, p_auth: auth });
@@ -229,9 +258,17 @@ async function recordImport(
 
   let storagePath: string | null = null;
   if (args.bytes && sha) {
-    const dup = errors.length
-      ? null
-      : await caller.db.from("import_batch").select("id").eq("tenant_id", t).eq("facility_id", f).eq("status", "accepted").eq("sha256", sha).limit(1).maybeSingle();
+    // Only batches that are still active suppress a re-upload: after a dataset archive the same original file is stored again.
+    let dupProbe = caller.db
+      .from("import_batch")
+      .select("id")
+      .eq("tenant_id", t)
+      .eq("facility_id", f)
+      .eq("status", "accepted")
+      .eq("sha256", sha);
+    const cutoff = await archiveCutoff(caller, t, f);
+    if (cutoff) dupProbe = dupProbe.gt("received_at", cutoff.toISOString());
+    const dup = errors.length ? null : await dupProbe.limit(1).maybeSingle();
     if (dup?.error) throw dbFail(dup.error);
     if (!dup?.data) {
       storagePath = `${t}/${f}/imports/${batchId}/${safeName(args.filename ?? "upload.bin")}`;
@@ -455,17 +492,20 @@ async function loadExpectedSeries(caller: MrvCaller, t: string, f: string, range
   return out;
 }
 
-async function loadConfigDocs(caller: MrvCaller, t: string, f: string): Promise<ConfigDoc[]> {
-  return fetchAll<ConfigDoc>((from, to) =>
-    caller.db
+/** Config documents still active (created after the dataset archive, if any). Archived versions never feed a run. */
+async function loadConfigDocs(caller: MrvCaller, t: string, f: string, cutoff: Date | null): Promise<ConfigDoc[]> {
+  return fetchAll<ConfigDoc>((from, to) => {
+    let q = caller.db
       .from("config_document")
       .select("id, kind, content, effective_from, effective_to, created_at", { count: "exact" })
       .eq("tenant_id", t)
-      .eq("facility_id", f)
+      .eq("facility_id", f);
+    if (cutoff) q = q.gt("created_at", cutoff.toISOString());
+    return q
       .order("created_at")
       .order("id")
-      .range(from, to) as unknown as PromiseLike<{ data: ConfigDoc[] | null; error: never; count: number | null }>
-  );
+      .range(from, to) as unknown as PromiseLike<{ data: ConfigDoc[] | null; error: never; count: number | null }>;
+  });
 }
 
 export async function calculateRange(
@@ -479,28 +519,29 @@ export async function calculateRange(
   const spec = validateSpec(specInput);
   if (!spec) throw badRequest("Invalid date range");
   const range = resolveRange(spec, { timezone: ctx.timezone, fiscalYearStartMonth: ctx.fiscalYearStartMonth });
+  const cutoff = await archiveCutoff(caller, t, f);
 
   // A concurrent import between loading and finalizing is detected by the database (MRV09 → 409): reload and retry.
   for (let attempt = 1; ; attempt++) {
     const [readings, docs, expectedSeries] = await Promise.all([
       loadReadings(caller, t, f, range),
-      loadConfigDocs(caller, t, f),
+      loadConfigDocs(caller, t, f, cutoff),
       loadExpectedSeries(caller, t, f, range),
     ]);
     const plan = planRun({ readings, docs, range, facility: ctx, expectedSeries, triggerBatchId: opts.triggerBatchId, assertions: opts.assertions });
     if (plan.kind === "none") return { view: null, coverage: plan.coverage, range, note: plan.note };
 
     // Same range, same pinned readings/considered set/config versions/engine/methodology/policies → reuse the stored run.
-    const existing = await caller.db
+    // Runs from before a dataset archive are never reused (the archived run stays readable history only).
+    let existingQuery = caller.db
       .from("calculation_run")
       .select("id, run_invalidation (id)")
       .eq("tenant_id", t)
       .eq("facility_id", f)
       .eq("dependency_sha256", plan.dependencySha)
-      .eq("engine_version", ENGINE_VERSION)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .eq("engine_version", ENGINE_VERSION);
+    if (cutoff) existingQuery = existingQuery.gt("created_at", cutoff.toISOString());
+    const existing = await existingQuery.order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (existing.error) throw dbFail(existing.error);
     if (existing.data && !(existing.data.run_invalidation as unknown[] | null)?.length) {
       return { view: await loadRun(caller, t, f, existing.data.id as string), coverage: plan.coverage, range, note: "Existing calculation reused (all inputs, versions and policies unchanged)." };
@@ -521,10 +562,13 @@ const RUN_COLUMNS =
 export async function loadRun(caller: MrvCaller, t: string, f: string, runId: string): Promise<RunView> {
   ids(t, f);
   if (!isUuid(runId)) throw notFound();
-  const { data, error } = await caller.db.from("calculation_run").select(RUN_COLUMNS).eq("tenant_id", t).eq("facility_id", f).eq("id", runId).maybeSingle();
-  if (error) throw dbFail(error);
-  if (!data) throw notFound();
-  return toRunView(caller, data as unknown as RunRow);
+  const [run, cutoff] = await Promise.all([
+    caller.db.from("calculation_run").select(RUN_COLUMNS).eq("tenant_id", t).eq("facility_id", f).eq("id", runId).maybeSingle(),
+    archiveCutoff(caller, t, f),
+  ]);
+  if (run.error) throw dbFail(run.error);
+  if (!run.data) throw notFound();
+  return toRunView(caller, run.data as unknown as RunRow, cutoff);
 }
 
 interface RunRow {
@@ -559,7 +603,7 @@ function withRunRef(store: Store, row: RunRow, stale: boolean): Store {
   };
 }
 
-function toRunView(caller: MrvCaller, row: RunRow): RunView {
+function toRunView(caller: MrvCaller, row: RunRow, cutoff: Date | null = null): RunView {
   const inv = (row.run_invalidation ?? []).sort((a, b) => (a.created_at < b.created_at ? -1 : 1))[0];
   return {
     run: {
@@ -579,6 +623,7 @@ function toRunView(caller: MrvCaller, row: RunRow): RunView {
       created_by_me: row.created_by === caller.user.id,
       coverage: row.coverage,
       stale: inv ? { reason: inv.reason, at: inv.created_at } : null,
+      archived: cutoff !== null && new Date(row.created_at) <= cutoff,
       integrity: checkRunIntegrity(row),
       readings: row.coverage?.includedCount ?? 0,
     },
@@ -599,15 +644,19 @@ export async function latestRun(caller: MrvCaller, t: string, f: string, specInp
     if (!spec) throw badRequest("Invalid date range");
     range = resolveRange(spec, { timezone: ctx.timezone, fiscalYearStartMonth: ctx.fiscalYearStartMonth });
   }
+  const cutoff = await archiveCutoff(caller, t, f);
   let q = caller.db.from("calculation_run").select(RUN_COLUMNS).eq("tenant_id", t).eq("facility_id", f);
+  if (cutoff) q = q.gt("created_at", cutoff.toISOString());
   if (range) q = q.eq("range_start", range.start).eq("range_end", range.end);
   const { data, error } = await q.order("created_at", { ascending: false }).order("id").limit(1).maybeSingle();
   if (error) throw dbFail(error);
   return { range, view: data ? toRunView(caller, data as unknown as RunRow) : null };
 }
 
+/** Run history for the facility, explicitly labelled: `archived` marks runs from before a dataset archive. */
 export async function listRuns(caller: MrvCaller, t: string, f: string) {
   await requireFacility(caller, t, f, "facility.read");
+  const cutoff = await archiveCutoff(caller, t, f);
   const { data, error } = await caller.db
     .from("calculation_run")
     .select("id, range_start, range_end, range_label, qa_overall, synthetic, created_at, engine_version, run_invalidation (reason)")
@@ -617,5 +666,36 @@ export async function listRuns(caller: MrvCaller, t: string, f: string) {
     .order("id")
     .limit(50);
   if (error) throw dbFail(error);
-  return (data ?? []).map((r) => ({ ...r, stale: ((r.run_invalidation as { reason: string }[] | null) ?? [])[0]?.reason ?? null, run_invalidation: undefined }));
+  return (data ?? []).map((r) => ({
+    ...r,
+    stale: ((r.run_invalidation as { reason: string }[] | null) ?? [])[0]?.reason ?? null,
+    archived: cutoff !== null && new Date(r.created_at as string) <= cutoff,
+    run_invalidation: undefined,
+  }));
+}
+
+/**
+ * Auditable dataset archive (tenant_admin + executor signature, re-checked in the database): retires every current
+ * reading and marks all runs, import batches and configuration documents created before the cutoff as history-only.
+ * Nothing is deleted; a fresh import of the same original file afterwards succeeds and stores it again.
+ */
+export async function archiveDataset(caller: MrvCaller, t: string, f: string, body: Record<string, unknown>) {
+  if (Object.keys(body).some((k) => !["reason", "expect"].includes(k))) throw badRequest("Unknown field");
+  if (typeof body.reason !== "string" || body.reason.trim().length < 3 || body.reason.length > 500)
+    throw badRequest("A reason (3–500 characters) is required");
+  if (body.expect !== undefined && (typeof body.expect !== "object" || body.expect === null || Array.isArray(body.expect)))
+    throw badRequest("expect must be an object");
+  const expectIn = body.expect as Record<string, unknown> | undefined;
+  if (expectIn && Object.keys(expectIn).some((k) => !["current_readings", "runs"].includes(k))) throw badRequest("Unknown expect field");
+  if (expectIn) for (const v of Object.values(expectIn)) if (typeof v !== "number" || !Number.isInteger(v) || v < 0)
+    throw badRequest("expect values must be non-negative integers");
+  await requireFacility(caller, t, f, "dataset.archive");
+  return executorRpc<Record<string, unknown>>(
+    caller,
+    "mrv_archive_dataset",
+    "archive",
+    t,
+    f,
+    JSON.stringify({ reason: body.reason.trim(), ...(expectIn ? { expect: expectIn } : {}) })
+  );
 }

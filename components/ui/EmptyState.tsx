@@ -30,6 +30,11 @@ export function EmptyState({ title }: { title: string }) {
     heading = "Unable to load saved data";
     action = { label: "Retry loading saved data", onClick: scope.reload };
   }
+  const archive = scope.summary?.archive ?? null;
+  if (archive && !hasRuns && readings === 0) {
+    heading = "No active dataset";
+    message = `The previous dataset of this factory was archived (${new Date(archive.at).toLocaleDateString()}): ${archive.reason}. Its readings, calculations and configuration remain available as labelled history only. Upload a fresh workbook to start a new dataset.`;
+  }
 
   return (
     <div className="state-box">

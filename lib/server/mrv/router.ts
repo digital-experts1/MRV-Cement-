@@ -2,7 +2,7 @@ import { isAllowedRequestOrigin } from "@/lib/server/requestOrigin";
 import { badRequest, HttpError, notFound, unauthenticated } from "@/lib/server/authz/errors";
 import { authenticateRequest, type MrvCaller } from "@/lib/server/supabase/auth";
 import {
-  calculateRange, createOrganization, facilitySummary, getMe, importDemo, importFile, importManual, latestRun, listFacilities,
+  archiveDataset, calculateRange, createOrganization, facilitySummary, getMe, importDemo, importFile, importManual, latestRun, listFacilities,
   listImports, listReportImpacts, listRuns, loadRun, readingHistory, savePreference, withdrawReading,
 } from "./service";
 
@@ -51,6 +51,7 @@ const routes: [string, string, Handler][] = [
     "/orgs/:t/facilities/:f/readings/:id/withdraw",
     async ({ caller, params, body }) => withdrawReading(caller, params.t, params.f, params.id, await body()),
   ],
+  ["POST", "/orgs/:t/facilities/:f/archive", async ({ caller, params, body }) => archiveDataset(caller, params.t, params.f, await body())],
   ["GET", "/orgs/:t/facilities/:f/readings/:id/history", ({ caller, params }) => readingHistory(caller, params.t, params.f, params.id)],
   ["GET", "/orgs/:t/facilities/:f/report-impacts", ({ caller, params }) => listReportImpacts(caller, params.t, params.f)],
   ["POST", "/orgs/:t/facilities/:f/manual", async ({ caller, params, body }) => importManual(caller, params.t, params.f, await body())],

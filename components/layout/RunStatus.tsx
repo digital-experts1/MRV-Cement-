@@ -74,6 +74,7 @@ export function RunStatus() {
           </button>
         ) : null}
       </div>
+      {s.run?.archived ? <div className="run-status-warn">This result is ARCHIVED (from the dataset cleanup) and is shown for history only — it is never auto-selected or reused for new calculations.</div> : null}
       {s.run?.stale ? <div className="run-status-warn">This result is stale: {s.run.stale.reason}. It remains stored for audit; recalculate to use current readings.</div> : null}
       {s.runNote ? <div className="run-status-note">{s.runNote}</div> : null}
       {cov && !s.calculating ? (

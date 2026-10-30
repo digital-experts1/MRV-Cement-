@@ -67,8 +67,8 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
   await pg.waitReady;
   try {
     await pg.exec(SHIM);
-    for (const f of ["0001_mrv_persistence.sql", "0002_mrv_rpc_storage.sql", "0003_mrv_trusted_execution.sql"]) await pg.exec(sqlFile(f));
-    check("migrations 0001–0003 apply on PostgreSQL", true);
+    for (const f of ["0001_mrv_persistence.sql", "0002_mrv_rpc_storage.sql", "0003_mrv_trusted_execution.sql", "0005_dataset_archive.sql"]) await pg.exec(sqlFile(f));
+    check("migrations 0001–0005 apply on PostgreSQL", true);
     for (const [k, id] of Object.entries(USERS)) await pg.query("insert into auth.users (id, email) values ($1, $2)", [id, `${k.toLowerCase()}@synthetic.test`]);
     const keyRow = (await pg.query<{ key_id: string; hex: string }>("select key_id, encode(secret, 'hex') as hex from mrv_private.executor_key where active")).rows[0];
     const KEY: ExecutorKey = { keyId: keyRow.key_id, secret: Buffer.from(keyRow.hex, "hex") };
@@ -398,6 +398,50 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     const cAfter = Number((await one<{ n: number }>("select count(*)::int as n from public.activity_reading where facility_id = $1", [fA1])).n);
     const e16 = await err(() => importInput(USERS.C, tA, fA1, createSampleDataset()));
     check("after revocation C reads nothing and cannot import", cAfter === 0 && !!e16 && e16.includes("42501"), { cAfter, e16 });
+
+    // ── 11. Dataset archive: retire the active dataset, then re-import the same file cleanly ──
+    // fA2 (no approved report) gets a run first so run-reuse across the archive boundary can be tested.
+    const preArchive = await calculate(USERS.A, tA, fA2, { preset: "quarter", year: 2025, quarter: 1 });
+    await su();
+    const f2current = Number((await one<{ n: number }>("select count(*)::int as n from public.activity_reading where facility_id = $1 and is_current", [fA2])).n);
+    // A facility with an approved (locked) report must never be archived: A1 has one.
+    const eArch1 = await err(() => rpc(USERS.A, "mrv_archive_dataset", "archive", tA, fA1, JSON.stringify({ reason: "must refuse: approved report" })));
+    check("archive refuses a facility with an approved (locked) report", !!eArch1 && eArch1.startsWith("22023") && /approved/.test(eArch1), eArch1);
+    // A member without the tenant_admin permission cannot archive.
+    await su();
+    const memD = (await one<{ id: string }>("insert into public.tenant_membership (tenant_id, user_id) values ($1, $2) returning id", [tA, USERS.C])).id;
+    await pg.query("insert into public.role_assignment (tenant_id, membership_id, role, facility_id, granted_by) values ($1, $2, 'facility_manager', $3, $4)", [tA, memD, fA2, USERS.A]);
+    const eArch2 = await err(() => rpc(USERS.C, "mrv_archive_dataset", "archive", tA, fA2, JSON.stringify({ reason: "not allowed" })));
+    check("facility_manager (no dataset.archive) cannot archive; only tenant_admin can", !!eArch2 && eArch2.startsWith("42501"), eArch2);
+    // An expect mismatch is refused before anything changes.
+    const eArch3 = await err(() => rpc(USERS.A, "mrv_archive_dataset", "archive", tA, fA2, JSON.stringify({ reason: "wrong expectations", expect: { current_readings: 999999 } })));
+    check("expect-count mismatch refuses the archive before any change", !!eArch3 && eArch3.startsWith("22023"), eArch3);
+    const arch = await rpc<{ readings_retired: number; current_readings_before: number }>(USERS.A, "mrv_archive_dataset", "archive", tA, fA2,
+      JSON.stringify({ reason: "synthetic dataset cleanup", expect: { current_readings: f2current } }));
+    await su();
+    const f2after = Number((await one<{ n: number }>("select count(*)::int as n from public.activity_reading where facility_id = $1 and is_current", [fA2])).n);
+    const sum2 = (await one<{ latest_observation: string | null; latest_calculation: string | null; current_readings: string }>(
+      "select latest_observation, latest_calculation, current_readings::text from public.mrv_facility_summary($1, $2)", [tA, fA2]));
+    check("archive retires every current reading and empties the active summary", arch.current_readings_before === f2current && arch.readings_retired === f2current && f2after === 0
+      && sum2.latest_observation === null && sum2.latest_calculation === null && Number(sum2.current_readings) === 0, { arch, f2after, sum2 });
+    const archRows = Number((await one<{ n: number }>("select count(*)::int as n from public.dataset_archive where facility_id = $1", [fA2])).n);
+    const archEvent = Number((await one<{ n: number }>("select count(*)::int as n from public.audit_event where facility_id = $1 and action = 'dataset.archive'", [fA2])).n);
+    const f2total = Number((await one<{ n: number }>("select count(*)::int as n from public.activity_reading where facility_id = $1", [fA2])).n);
+    check("archive is recorded (dataset_archive row + audit event) and history rows are kept, not deleted", archRows === 1 && archEvent === 1 && f2total >= f2current, { archRows, archEvent, f2total });
+    // Re-importing the SAME file after the archive stores every reading fresh (no duplicate refusal, no revision collision).
+    const re1 = await importInput(USERS.A, tA, fA2, createSampleDataset(), { sha256: "c".repeat(64) });
+    const re2 = await importInput(USERS.A, tA, fA2, createSampleDataset(), { sha256: "c".repeat(64) });
+    await su();
+    const f2current2 = Number((await one<{ n: number }>("select count(*)::int as n from public.activity_reading where facility_id = $1 and is_current", [fA2])).n);
+    check("re-import after archive: every reading inserted fresh; identical second import is a duplicate (no double counting)",
+      re1.status === "accepted" && re1.inserted === f2current && re1.unchanged === 0 && re2.status === "duplicate" && f2current2 === f2current, { re1, re2, f2current2, f2current });
+    // The fresh calculation is a NEW run; the pre-archive run is never reused or returned as latest.
+    const postArchive = await calculate(USERS.A, tA, fA2, { preset: "quarter", year: 2025, quarter: 1 });
+    const again2 = await calculate(USERS.A, tA, fA2, { preset: "quarter", year: 2025, quarter: 1 });
+    check("post-archive calculation creates a fresh run (archived run not reused; recalculation idempotent)", postArchive.id !== preArchive.id && again2.id === postArchive.id, { pre: preArchive.id, post: postArchive.id });
+    const cutoffRow = await one<{ cutoff: string }>("select cutoff::text from public.dataset_archive where facility_id = $1", [fA2]);
+    const preRun = await one<{ created_at: string }>("select created_at::text from public.calculation_run where id = $1", [preArchive.id]);
+    check("pre-archive run predates the cutoff: history only (excluded from latest selection by the service filter)", preRun.created_at < cutoffRow.cutoff, { preRun: preRun.created_at, cutoff: cutoffRow.cutoff });
   } catch (e) {
     check("harness completed without unexpected error", false, e instanceof Error ? `${(e as { code?: string }).code ?? ""} ${e.message}` : String(e));
   } finally {
