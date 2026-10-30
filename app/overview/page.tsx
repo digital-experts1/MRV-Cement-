@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import "./overview.css";
-import { DonutChart } from "@/components/charts/ChartCanvas";
+import { BreakdownVisual } from "@/components/overview/BreakdownVisual";
 import { Icon } from "@/components/icons/Icon";
 import { QaDot } from "@/components/ui/Badge";
 import { Fmt } from "@/components/ui/Fmt";
@@ -79,8 +79,8 @@ function OverviewContent({ s }: { s: Store }) {
         desc={`Here's your plant at a glance — ${site}, ${country} · ${quarter} · ${product}`}
         actions={
           <>
-            <button type="button" className={`badge badge-${qaColor}`} onClick={() => showExplanation("kpi-qaqc-status")}>
-              <QaDot status={qaStatus} /> QA/QC {qaStatus}
+            <button type="button" className={`badge badge-${qaColor} overview-status-action`} onClick={() => showExplanation("kpi-qaqc-status")}>
+              <QaDot status={qaStatus} /> QA/QC {qaStatus} <Icon name="info" size={16} />
             </button>
             <span className="badge badge-accent">v{version}</span>
           </>
@@ -98,7 +98,8 @@ function OverviewContent({ s }: { s: Store }) {
             <span className={`badge ${coverage?.complete && !scope.run?.stale ? "badge-pass" : "badge-warn"}`}>
               {scope.run?.stale ? "Results out of date" : coverage?.complete ? "Full period covered" : "Results need reconciliation"}
             </span>
-            {scope.canCalculate && <button type="button" className="btn btn-primary btn-sm" disabled={scope.calculating} onClick={scope.recalculate}>
+            {scope.canCalculate && <button type="button" className="btn btn-primary btn-sm" disabled={scope.calculating} aria-busy={scope.calculating} onClick={scope.recalculate}>
+              <Icon name="calculator" size={18} />
               {scope.calculating ? "Calculating…" : "Recalculate selected period"}
             </button>}
           </div>
@@ -112,7 +113,7 @@ function OverviewContent({ s }: { s: Store }) {
         {(!coverage?.complete || scope.run?.stale) && <div className="overview-review-note">
           <Icon name="info" size={18} />
           <div><strong>{scope.run?.stale ? "Readings or factors changed. Recalculate this period." : "Review data quality before using these results."}</strong><p>{scope.run?.stale ? "These are historical results and do not reflect the latest inputs." : "Totals may combine overlapping sources or incomplete coverage. Field completeness does not establish period coverage or verification."}</p></div>
-          <Link className="btn btn-secondary btn-sm" href="/dataentry">Review inputs</Link>
+          <Link className="btn btn-secondary btn-sm" href="/dataentry"><Icon name="file-text" size={18} /> Review inputs</Link>
         </div>}
         <details className="overview-issues">
           <summary>Coverage and reconciliation details <span>{conflictGroups.length} input sections with conflicting totals · {missingGroups.length} with coverage gaps</span></summary>
@@ -135,7 +136,7 @@ function OverviewContent({ s }: { s: Store }) {
             {!!coverage?.excluded.length && <p>{fmtInt(coverage.excluded.length)} readings excluded. Run details above contains the exclusion reasons and record history.</p>}
             {coverage?.complete && <p>Required period coverage is complete. QA/QC and evidence review remain separate checks.</p>}
             {!coverage && <p>Coverage information is unavailable for this saved result. Recalculate the selected period to check it.</p>}
-            <Link className="btn btn-secondary btn-sm" href="/dataentry">Review stored inputs</Link>
+            <Link className="btn btn-secondary btn-sm" href="/dataentry"><Icon name="file-text" size={18} /> Review stored inputs</Link>
           </div>
         </details>
       </section>
@@ -165,27 +166,8 @@ function OverviewContent({ s }: { s: Store }) {
             </div>
             <span className="badge badge-accent">{fmtRaw(totalCO2, 0)} tCO₂ total</span>
           </div>
-          <div className="donut-split">
-            <div className="chart-container donut-chart">
-              <DonutChart breakdown={breakdown} />
-            </div>
-            <div style={{ flex: 1 }}>
-              {breakdown.map((d) => (
-                <div className="metric-row" key={d.component}>
-                  <span className="metric-dot" style={{ background: CO2_COLORS[d.component] || "#60a5fa" }} />
-                  <span className="metric-name">{d.component}</span>
-                  <span className="metric-value">{fmtInt(d.tCO2)}</span>
-                  <span className="metric-share">{fmtDec((d.share || 0) * 100, 1)}%</span>
-                </div>
-              ))}
-              <div className="divider" style={{ margin: "12px 0" }} />
-              <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.4 }}>
-                Direct = Calcination + Fuel Combustion
-                <br />
-                Total = Direct + Indirect Grid CO₂
-              </div>
-            </div>
-          </div>
+          <BreakdownVisual label="Emissions by source" unit="tCO₂" total={fmtRaw(totalCO2, 0) ?? "—"} items={breakdown.map(d => ({ label: d.component, value: d.tCO2, color: CO2_COLORS[d.component] || "#52647a" }))} />
+          <p className="overview-chart-footnote">Process + fossil fuel combustion + grid electricity. Biogenic CO₂ is reported separately. Values reflect the selected period; review any reconciliation warnings above.</p>
         </div>
 
         <div className="section-card">
@@ -231,38 +213,13 @@ function OverviewContent({ s }: { s: Store }) {
             }
           />
           <div className="section-card-body">
-            <div className="scorecard" style={{ padding: 0, background: "transparent", border: "none", marginBottom: 16 }}>
-              <div className="scorecard-metric" style={{ paddingRight: 24 }}>
-                <div className="sc-val sc-pass">{passed}</div>
-                <div className="sc-label">Passed</div>
-              </div>
-              <div className="scorecard-metric" style={{ padding: "0 24px" }}>
-                <div className="sc-val sc-fail">{failed}</div>
-                <div className="sc-label">Failed</div>
-              </div>
-              <div className="scorecard-metric" style={{ padding: "0 24px" }}>
-                <div className="sc-val" style={{ color: notEvaluated > 0 ? "var(--qa-warn)" : undefined }}>{notEvaluated}</div>
-                <div className="sc-label">Not evaluated</div>
-              </div>
-              <div className="scorecard-metric" style={{ padding: "0 24px" }}>
-                <div className="sc-val" style={{ color: warnings > 0 ? "var(--qa-warn)" : undefined }}>{warnings}</div>
-                <div className="sc-label">Warnings</div>
-              </div>
-              <div className="scorecard-metric" style={{ padding: "0 24px" }}>
-                <div className="sc-val sc-info">{total}</div>
-                <div className="sc-label">Total</div>
-              </div>
-              <div className="scorecard-metric" style={{ padding: "0 24px" }}>
-                <div className="sc-val" style={{ color: s.completeness.pct === 100 ? "var(--qa-pass)" : "var(--qa-warn)" }}>{s.completeness.pct}%</div>
-                <div className="sc-label">Input fields complete</div>
-              </div>
-              <div className="scorecard-metric" style={{ paddingLeft: 24, border: "none" }}>
-                <div className="sc-val" style={{ color: qaPct === 100 ? "var(--qa-pass)" : "var(--qa-warn)" }}>
-                  {qaPct}%
-                </div>
-                <div className="sc-label">Pass Rate</div>
-              </div>
-            </div>
+            <BreakdownVisual label="QA/QC check status" unit="checks" total={String(total)} items={[
+              { label: "Passed", value: passed, color: "#14836d" },
+              { label: "Failed", value: failed, color: "#c43d48" },
+              { label: "Warnings", value: warnings, color: "#cf8716" },
+              { label: "Not evaluated", value: notEvaluated, color: "#8494a8" },
+            ]} />
+            <p className="overview-chart-footnote">QA pass rate: {qaPct}%. Input fields complete: {s.completeness.pct}%. These checks do not establish external verification.</p>
             <div className="progress-bar">
               <div
                 className="progress-fill"
