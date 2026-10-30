@@ -13,7 +13,7 @@ export function DatasetBanner() {
       <summary>
         {store.meta.synthetic ? <span className="badge badge-info">Synthetic demo</span> : null}
         <span>{ready ? "Ready for internal review" : "Needs review"}</span>
-        <span>Required data {store.completeness.pct}%</span>
+        <span>Input fields {store.completeness.pct}%</span>
         <span>QA pass rate {store.qaPassPct}%</span>
         <span className="dataset-status-verification">Not externally verified</span>
         <span className="dataset-status-link">Details</span>

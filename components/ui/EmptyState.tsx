@@ -48,6 +48,16 @@ export function EmptyState({ title }: { title: string }) {
           {action.label}
         </button>
       ) : null}
+      {hasRuns && readingsPeriod && !inReadingsPeriod ? (
+        <button type="button" className="btn btn-secondary" style={{ marginTop: 8 }} onClick={scope.openReadingsPeriod} disabled={scope.calculating}>
+          Open stored readings period ({readingsPeriod.start} – {readingsPeriod.end})
+        </button>
+      ) : null}
+      {hasRuns && readings > 0 && scope.canCalculate ? (
+        <button type="button" className="btn btn-primary" style={{ marginTop: 8 }} onClick={scope.recalculate} disabled={scope.calculating}>
+          Calculate selected period
+        </button>
+      ) : null}
       <button type="button" className="btn btn-primary" style={{ marginTop: 8 }} onClick={openUpload} aria-haspopup="dialog">
         <Icon name="upload" size={14} /> Upload Readings File
       </button>
@@ -59,10 +69,10 @@ export function LoadingState({ filename }: { filename?: string }) {
   return (
     <div className="state-box">
       <div className="spinner" />
-      <div className="state-title">Reading your workbook…</div>
+      <div className="state-title">Loading data…</div>
       {filename ? <div className="state-sub" style={{ color: "var(--text-muted)", fontSize: 12 }}>{filename}</div> : null}
       <div className="state-sub" style={{ fontSize: 11.5, marginTop: 4 }}>
-        Parsing all 14 sheets and running QA/QC checks
+        Please wait while the selected dataset is loaded.
       </div>
     </div>
   );

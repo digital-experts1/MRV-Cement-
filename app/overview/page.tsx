@@ -9,6 +9,8 @@ import { KpiCard } from "@/components/ui/KpiCard";
 import { PageHeader, SectionHeader } from "@/components/ui/PageHeader";
 import { RequireWorkbook } from "@/components/ui/RequireWorkbook";
 import { useExplainer } from "@/context/ExplainerContext";
+import { useScope } from "@/context/ScopeContext";
+import { SECTION_LABELS_CLIENT } from "@/lib/mrv/sectionLabels";
 import { CO2_COLORS } from "@/lib/charts";
 import { buildFallbackBreakdown } from "@/lib/breakdown";
 import { fmtDec, fmtInt, fmtRaw } from "@/lib/formatter";
@@ -16,6 +18,9 @@ import type { Store } from "@/lib/types";
 
 function OverviewContent({ s }: { s: Store }) {
   const { showExplanation } = useExplainer();
+  const scope = useScope();
+  const coverage = scope.coverage;
+  const discrepancies = coverage?.reconciliations?.filter((r) => r.status === "discrepancy") ?? [];
   const calcs = s.calculations;
   const dash = s.dashboard;
 
@@ -49,7 +54,7 @@ function OverviewContent({ s }: { s: Store }) {
   const pStart = String(s.setup["Period start"] || "—");
   const pEnd = String(s.setup["Period end"] || "—");
   const method = String(s.setup["Selected calcination method"] || "—");
-  const version = String(s.readme.find((r) => r.Control === "Workbook Version")?.Value || "—");
+  const version = String(s.readme.find((r) => r.Control === "Workbook Version")?.Value || "—").replace(/^v/i, "");
 
   const qaColor = qaStatus === "PASS" ? "pass" : qaStatus === "FAIL" ? "fail" : "warn";
   const tsrVal = tsr !== null && tsr !== undefined ? fmtDec(parseFloat(String(tsr)), 2) : "—";
@@ -77,6 +82,29 @@ function OverviewContent({ s }: { s: Store }) {
           </>
         }
       />
+
+      <section className="section-card mb-lg" aria-label="Reporting period coverage">
+        <SectionHeader icon="file-text" title="Reporting period coverage" actions={scope.canCalculate ? (
+          <button type="button" className="btn btn-secondary btn-sm" disabled={scope.calculating} onClick={scope.recalculate}>
+            {scope.calculating ? "Loading…" : "Recalculate selected period"}
+          </button>
+        ) : undefined} />
+        <div className="section-card-body">
+          <p><strong>{pStart} – {pEnd}</strong> · {scope.run?.readings ?? "—"} readings used</p>
+          <p className={`badge ${coverage?.complete ? "badge-pass" : "badge-warn"}`}>
+            {coverage?.complete ? "Full period covered" : "Period coverage needs review — totals require reconciliation"}
+          </p>
+          <p>Input fields complete: {s.completeness.pct}%. This does not establish that every month or meter is covered.</p>
+          {Object.entries(coverage?.missing ?? {}).map(([section, months]) => (
+            <p key={section}>{SECTION_LABELS_CLIENT[section] ?? section} missing coverage: {months.join(", ")}</p>
+          ))}
+          {discrepancies.map((r) => (
+            <p key={r.coarse.id}>Conflicting {SECTION_LABELS_CLIENT[r.section] ?? r.section} totals for {r.coarse.interval}. The saved calculation uses the broader period total; the monthly/daily readings disagree.</p>
+          ))}
+          {!!coverage?.excluded.length && <p>{coverage.excluded.length} readings excluded. Open Run details above to inspect exclusions and reconciliation.</p>}
+          <Link className="btn btn-secondary btn-sm" href="/dataentry">Review stored inputs</Link>
+        </div>
+      </section>
 
       <div className="grid-4 mb-lg">
         <KpiCard label="Clinker Production" value={fmtRaw(clinkerProd, 0)} unit="t" desc="Total kiln clinker produced in period" explainKey="kpi-clinker-prod" className="accent-card" />
@@ -131,7 +159,7 @@ function OverviewContent({ s }: { s: Store }) {
               {[
                 ["Site", site],
                 ["Country", country],
-                ["Reporting Quarter", quarter],
+                ["Reporting Period", quarter],
                 ["Period", `${pStart} → ${pEnd}`],
                 ["Product", product],
                 ["Calcination Method", method],
@@ -186,7 +214,7 @@ function OverviewContent({ s }: { s: Store }) {
               </div>
               <div className="scorecard-metric" style={{ padding: "0 24px" }}>
                 <div className="sc-val" style={{ color: s.completeness.pct === 100 ? "var(--qa-pass)" : "var(--qa-warn)" }}>{s.completeness.pct}%</div>
-                <div className="sc-label">Data complete</div>
+                <div className="sc-label">Input fields complete</div>
               </div>
               <div className="scorecard-metric" style={{ paddingLeft: 24, border: "none" }}>
                 <div className="sc-val" style={{ color: qaPct === 100 ? "var(--qa-pass)" : "var(--qa-warn)" }}>
@@ -258,7 +286,9 @@ function OverviewContent({ s }: { s: Store }) {
               <div className="progress-fill" style={{ width: `${evTotal > 0 ? Math.round((evMapped / evTotal) * 100) : 0}%` }} />
             </div>
             <div style={{ marginTop: 16, fontSize: 12, color: "var(--text-secondary)" }}>
-              {evPending > 0 ? (
+              {evTotal === 0 ? (
+                <span className="badge badge-warn">No evidence references supplied</span>
+              ) : evPending > 0 ? (
                 <span className="badge badge-warn">
                   <span className="qa-dot qa-dot-warn" /> {evPending} evidence item{evPending > 1 ? "s" : ""} pending review
                 </span>

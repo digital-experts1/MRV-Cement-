@@ -1,29 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { rangeWithDefaults } from "@/lib/mrv/rangeDefaults";
 import { PRESET_LABELS, RANGE_PRESETS, parseDate, todayIn, validateSpec, type RangePreset, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-function withDefaults(preset: RangePreset, current: RangeSpec | null, timezone: string): RangeSpec {
-  const t = parseDate(todayIn(timezone))!;
-  const year = current?.year ?? t.y;
-  switch (preset) {
-    case "month":
-      return { preset, year, month: current?.month ?? t.m };
-    case "quarter":
-      return { preset, year, quarter: current?.quarter ?? Math.ceil(t.m / 3) };
-    case "half":
-      return { preset, year, half: current?.half ?? (t.m <= 6 ? 1 : 2) };
-    case "year":
-    case "fiscal_year":
-      return { preset, year };
-    case "custom":
-      return { preset, start: current?.start ?? `${t.y}-01-01`, end: current?.end ?? todayIn(timezone) };
-    default:
-      return { preset };
-  }
-}
 
 /** Reporting date-range selector. Shows the exact resolved dates and timezone so labels are never ambiguous. */
 export function RangeSelector({ spec, resolved, timezone, onChange, disabled }: {
@@ -51,7 +32,7 @@ export function RangeSelector({ spec, resolved, timezone, onChange, disabled }: 
         aria-label="Reporting range"
         value={d?.preset ?? ""}
         disabled={disabled}
-        onChange={(e) => apply(withDefaults(e.target.value as RangePreset, d, timezone))}
+        onChange={(e) => apply(rangeWithDefaults(e.target.value as RangePreset, d, timezone, resolved))}
       >
         {!d ? <option value="">Select range…</option> : null}
         {RANGE_PRESETS.map((p) => (

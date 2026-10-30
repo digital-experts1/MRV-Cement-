@@ -28,8 +28,11 @@ export function RunStatus() {
     cov?.reconciliations?.some((r) => r.status === "discrepancy"));
 
   return (
+    <>
+    {s.error ? <div className="run-status run-status-warn" role="alert">{s.error}</div> : null}
+    {s.runNote ? <div className="run-status run-status-note" role="status">{s.runNote}</div> : null}
     <details className="run-status run-status-details">
-      <summary>{s.calculating ? "Calculating…" : s.run ? s.run.stale ? "Stored calculation needs updating" : "Stored calculation" : "No stored calculation"}<span>{s.run ? `${s.run.readings} readings · ${fmtTime(s.run.created_at)}` : "Import data to get started"}</span><span>{needsAttention ? "Needs attention · view details" : "Run details"}</span></summary>
+      <summary>{s.calculating ? s.activity === "calculating" ? "Calculating…" : "Loading saved results…" : s.run ? s.run.stale ? "Stored calculation needs updating" : "Stored calculation" : "No stored calculation for this period"}<span>{s.run ? `${s.run.readings} readings · ${fmtTime(s.run.created_at)}` : s.summary?.currentReadings ? `${s.summary.currentReadings} stored readings · latest ${s.summary.latestObservation ?? "—"}` : "Import data to get started"}</span><span>{needsAttention ? "Needs attention · view details" : "Run details"}</span></summary>
       <div className="run-status-row">
         {s.calculating ? (
           <span className="scope-muted">
@@ -75,7 +78,6 @@ export function RunStatus() {
         ) : null}
       </div>
       {s.run?.stale ? <div className="run-status-warn">This result is stale: {s.run.stale.reason}. It remains stored for audit; recalculate to use current readings.</div> : null}
-      {s.runNote ? <div className="run-status-note">{s.runNote}</div> : null}
       {cov && !s.calculating ? (
         <div className="run-status-cov">
           {cov.coverageThrough ? <span>All required sections covered through {cov.coverageThrough}.</span> : <span>Required data is incomplete for this range.</span>}
@@ -115,5 +117,6 @@ export function RunStatus() {
         </div>
       ) : null}
     </details>
+    </>
   );
 }

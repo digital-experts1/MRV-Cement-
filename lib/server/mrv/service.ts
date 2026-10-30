@@ -143,7 +143,16 @@ export async function facilitySummary(caller: MrvCaller, t: string, f: string) {
   const { data, error } = await caller.db.rpc("mrv_facility_summary", { p_tenant: t, p_facility: f });
   if (error) throw dbFail(error);
   const s = (Array.isArray(data) ? data[0] : data) ?? {};
+  const bounds = (column: "interval_start" | "interval_end", ascending: boolean) => caller.db
+    .from("activity_reading").select(column).eq("tenant_id", t).eq("facility_id", f)
+    .eq("is_current", true).eq("quality_state", "accepted")
+    .order(column, { ascending }).limit(1).maybeSingle();
+  const [first, last] = await Promise.all([bounds("interval_start", true), bounds("interval_end", false)]);
+  if (first.error) throw dbFail(first.error);
+  if (last.error) throw dbFail(last.error);
   return {
+    readingsStart: (first.data as { interval_start?: string } | null)?.interval_start ?? null,
+    readingsEnd: (last.data as { interval_end?: string } | null)?.interval_end ?? null,
     latestObservation: s.latest_observation ?? null,
     latestImport: s.latest_import ?? null,
     latestCalculation: s.latest_calculation ?? null,
