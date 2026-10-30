@@ -7,6 +7,7 @@
 import { calculateStore } from "@/lib/calcEngine";
 import { parseDataPackage } from "@/lib/dataPackage";
 import { toIsoDate } from "@/lib/dates";
+import { parseDailyTotals } from "@/lib/mrv/dailyTotals";
 import { parseWorkbook } from "@/lib/parser";
 import { createSampleDataset } from "@/lib/sampleData";
 import { createEmptyInput, type DataOrigin, type MrvInput, type RowSource, type Store } from "@/lib/types";
@@ -222,7 +223,7 @@ async function recordImport(
   ctx: Awaited<ReturnType<typeof requireFacility>>,
   t: string,
   f: string,
-  args: { origin: DataOrigin; candidate: Store; filename: string | null; bytes?: Uint8Array; mime?: string; mapping: ImportMapping | null }
+  args: { origin: DataOrigin; candidate: Store; filename: string | null; bytes?: Uint8Array; mime?: string; mapping: ImportMapping | null; configKinds?: string[] }
 ): Promise<ImportOutcomeView> {
   executorKey(); // fail before storing anything when the trusted executor is unavailable
   const { candidate, origin } = args;
@@ -275,7 +276,7 @@ async function recordImport(
       effective_basis: eff?.basis ?? null,
     },
     errors.length ? [] : drafts.readings,
-    errors.length ? [] : toConfigDrafts(candidate.inputs)
+    errors.length ? [] : toConfigDrafts(candidate.inputs).filter(d => !args.configKinds || args.configKinds.includes(d.kind))
   );
   const res = await executorRpc<{ batch_id: string; status: ImportOutcomeView["status"]; inserted: number; revised: number; unchanged: number; duplicate_of?: string | null }>(
     caller, "mrv_import_v2", "import", t, f, body
@@ -320,16 +321,21 @@ function mappingArg(value: unknown): ImportMapping | null {
   return m;
 }
 
-export async function importFile(caller: MrvCaller, t: string, f: string, file: { filename: string; bytes: Uint8Array; mapping: unknown }) {
+export async function importFile(caller: MrvCaller, t: string, f: string, file: { filename: string; bytes: Uint8Array; mapping: unknown; format?: unknown }) {
   const ctx = await requireFacility(caller, t, f, "upload.create");
-  const mapping = mappingArg(file.mapping);
+  if (file.format != null && file.format !== "daily-totals") throw badRequest("Unknown import format");
+  const daily = file.format === "daily-totals";
+  const mapping = daily ? null : mappingArg(file.mapping);
   const name = file.filename;
   const isJson = /\.json$/i.test(name);
-  if (!isJson && !/\.(xlsx|xlsm)$/i.test(name)) throw badRequest("Choose an .xlsx/.xlsm workbook or a TRACE FORCE MRV data export (.json)");
+  if (daily && !/\.(csv|xlsx|xlsm)$/i.test(name)) throw badRequest("Daily totals require CSV or Excel");
+  if (!daily && !isJson && !/\.(xlsx|xlsm)$/i.test(name)) throw badRequest("Choose an .xlsx/.xlsm workbook or a TRACE FORCE MRV data export (.json)");
   const buf = file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer;
-  const candidate = isJson ? parseDataPackage(new TextDecoder().decode(file.bytes), name) : parseWorkbook(buf, name);
-  const mime = isJson ? "application/json" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-  return recordImport(caller, ctx, t, f, { origin: isJson ? "data-package" : "workbook", candidate, filename: name, bytes: file.bytes, mime, mapping });
+  const converted = daily ? parseDailyTotals(buf, name) : null;
+  const candidate = converted ? converted.store : isJson ? parseDataPackage(new TextDecoder().decode(file.bytes), name) : parseWorkbook(buf, name);
+  if (converted && ctx.synthetic) { candidate.meta.synthetic = true; candidate.inputs.meta.synthetic = true; }
+  const mime = /\.csv$/i.test(name) ? "text/csv" : isJson ? "application/json" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  return recordImport(caller, ctx, t, f, { origin: isJson ? "data-package" : "workbook", candidate, filename: name, bytes: file.bytes, mime, mapping, ...(converted ? { configKinds: converted.configKinds } : {}) });
 }
 
 function asInput(value: unknown): MrvInput {
