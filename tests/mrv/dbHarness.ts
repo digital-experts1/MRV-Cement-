@@ -409,7 +409,8 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     check("archive refuses a facility with an approved (locked) report", !!eArch1 && eArch1.startsWith("22023") && /approved/.test(eArch1), eArch1);
     // A member without the tenant_admin permission cannot archive.
     await su();
-    const memD = (await one<{ id: string }>("insert into public.tenant_membership (tenant_id, user_id) values ($1, $2) returning id", [tA, USERS.C])).id;
+    // C already has a tenant membership; only its earlier role was revoked.
+    const memD = memC;
     await pg.query("insert into public.role_assignment (tenant_id, membership_id, role, facility_id, granted_by) values ($1, $2, 'facility_manager', $3, $4)", [tA, memD, fA2, USERS.A]);
     const eArch2 = await err(() => rpc(USERS.C, "mrv_archive_dataset", "archive", tA, fA2, JSON.stringify({ reason: "not allowed" })));
     check("facility_manager (no dataset.archive) cannot archive; only tenant_admin can", !!eArch2 && eArch2.startsWith("42501"), eArch2);
