@@ -8,7 +8,7 @@ import { useStore } from "@/context/StoreContext";
 import { downloadDataPackage, downloadExcel, downloadPDF } from "@/lib/export";
 
 export function Topbar() {
-  const { store, toggleSidebar, openUpload } = useStore();
+  const { store, loading, toggleSidebar, openUpload } = useStore();
   const { showExplanation } = useExplainer();
   const [pdfBusy, setPdfBusy] = useState(false);
 
@@ -58,13 +58,14 @@ export function Topbar() {
         >
           <Icon name="upload" size={14} /> <span className="btn-label">Upload Readings File</span>
         </button>
-        <button className="btn btn-primary btn-sm" id="btn-download-pdf" type="button" title={pdfBusy ? "Generating PDF" : "Get Report"} onClick={onPdf} disabled={pdfBusy} onContextMenu={(e) => { e.preventDefault(); showExplanation("btn-download-pdf"); }}>
+        <button className="btn btn-primary btn-sm" id="btn-download-pdf" type="button" title={pdfBusy ? "Generating PDF" : "Get Report"} onClick={onPdf} disabled={pdfBusy || loading || !store?._valid} onContextMenu={(e) => { e.preventDefault(); showExplanation("btn-download-pdf"); }}>
           <Icon name="download" size={14} /> <span className="btn-label">{pdfBusy ? "Generating PDF..." : "Get Report"}</span>
         </button>
         <button
           className="btn btn-secondary btn-sm"
           type="button"
           title="Presentation workbook of computed results (not re-importable)"
+          disabled={loading || !store?._valid}
           onClick={() => {
             if (store) downloadExcel(store);
           }}
@@ -75,6 +76,7 @@ export function Topbar() {
           className="btn btn-secondary btn-sm"
           type="button"
           title="Re-importable data export with provenance (.json)"
+          disabled={loading || !store?._valid}
           onClick={() => {
             if (store) downloadDataPackage(store);
           }}

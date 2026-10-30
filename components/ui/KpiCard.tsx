@@ -30,7 +30,7 @@ export function KpiCard({
     >
       <div className="kpi-top">
         <span className="kpi-label">{label}</span>
-        <button className="kpi-info-trigger" aria-label="Information" tabIndex={-1} type="button">
+        <button className="kpi-info-trigger" aria-label={`${label} information`} disabled={!explainKey} type="button">
           <Icon name="info" size={13} />
         </button>
       </div>

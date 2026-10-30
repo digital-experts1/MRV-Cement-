@@ -66,6 +66,8 @@ export interface MeResponse {
 }
 
 export interface FacilitySummary {
+  readingsStart?: string | null;
+  readingsEnd?: string | null;
   latestObservation: string | null;
   latestImport: string | null;
   latestCalculation: string | null;

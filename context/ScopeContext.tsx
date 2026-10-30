@@ -57,7 +57,7 @@ interface ScopeValue {
   /** True while saved results are being read or a calculation is running. */
   calculating: boolean;
   activity: "reading" | "calculating" | null;
-  /** Reporting period containing the factory's latest stored reading (null without readings). */
+  /** Full period covered by the factory's stored readings (null without readings). */
   readingsPeriod: ResolvedRange | null;
   canCalculate: boolean;
   canImport: boolean;
@@ -70,9 +70,9 @@ interface ScopeValue {
   recalculate: () => void;
   /** Switch the reporting controls to the factory's latest saved run and display it. */
   openLatestSaved: () => void;
-  /** Switch to the reporting period that contains the latest stored reading. */
+  /** Switch to the full span of stored readings. */
   openReadingsPeriod: () => void;
-  importFile: (file: File, mapping?: string | null) => Promise<ImportOutcome | { accepted: false; errors: string[] }>;
+  importFile: (file: File, mapping?: string | null, format?: "daily-totals") => Promise<ImportOutcome | { accepted: false; errors: string[] }>;
   saveManual: (input: MrvInput, mapping?: string | null) => Promise<ImportOutcome>;
   loadDemo: () => Promise<ImportOutcome>;
   signOut: () => Promise<void>;
@@ -89,6 +89,7 @@ function readStored(t: string, f: string, spec: RangeSpec, signal?: AbortSignal)
 }
 
 function defaultRange(summary: FacilitySummary | null, timezone: string): RangeSpec {
+  if (summary?.readingsStart && summary.readingsEnd) return specForDates(summary.readingsStart, summary.readingsEnd);
   const latest = summary?.latestObservation ? parseDate(summary.latestObservation) : null;
   if (latest) return { preset: "quarter", year: latest.y, quarter: Math.ceil(latest.m / 3) };
   const t = parseDate(todayIn(timezone))!;
@@ -465,7 +466,7 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   );
 
   const importFile = useCallback(
-    async (file: File, mapping?: string | null) => {
+    async (file: File, mapping?: string | null, format?: "daily-totals") => {
       if (!tenantId || !facility) return { accepted: false as const, errors: ["Sign in and select a factory before importing."] };
       if (!facility.permissions.includes("upload.create")) return { accepted: false as const, errors: ["You do not have permission to import data for this factory."] };
       const startToken = guard.current.current();
@@ -476,7 +477,7 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
       }
       const m = mapping ? `&mapping=${encodeURIComponent(mapping)}` : "";
       return withImport(() =>
-        mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility.id}/imports?filename=${encodeURIComponent(file.name)}${m}`, {
+        mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility.id}/imports?filename=${encodeURIComponent(file.name)}${m}${format ? `&format=${format}` : ""}`, {
           method: "POST",
           body: bytes,
           headers: { "content-type": "application/octet-stream" },
