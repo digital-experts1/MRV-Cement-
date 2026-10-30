@@ -1,0 +1,55 @@
+.overview-results { --overview-ink: #203957; --overview-border: #dce5ed; }
+.overview-results .page-header { margin-bottom: 24px; }
+.overview-period { background: var(--bg-card, #fff); border: 1px solid var(--overview-border); border-radius: 14px; overflow: hidden; }
+.overview-period-top { display: flex; justify-content: space-between; gap: 24px; padding: 24px 28px 20px; }
+.overview-period h3 { font-size: 14px; font-weight: 600; margin: 0 0 10px; color: var(--text-secondary); }
+.overview-dates { font-size: clamp(18px, 2vw, 25px); font-weight: 650; color: var(--overview-ink); margin: 0; font-variant-numeric: tabular-nums; }
+.overview-dates span { font-size: 14px; font-weight: 400; color: var(--text-muted); margin: 0 8px; }
+.overview-period-caption { margin: 8px 0 0; font-size: 12px; color: var(--text-secondary); }
+.overview-period-actions { display: flex; align-items: flex-end; flex-direction: column; gap: 12px; }
+.overview-health { margin: 0; padding: 0 28px 22px; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 20px; }
+.overview-health > div { border-left: 2px solid #d7e2ee; padding-left: 14px; }
+.overview-health dt { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.overview-health dd { margin: 0; font-size: 24px; font-weight: 650; color: var(--overview-ink); font-variant-numeric: tabular-nums; }
+.overview-review-note { display: flex; gap: 12px; align-items: center; padding: 16px 28px; background: #fff8eb; border-top: 1px solid #f2dfb7; color: #70480c; }
+.overview-review-note > svg { flex-shrink: 0; }
+.overview-review-note > div { flex: 1; }
+.overview-review-note strong { font-size: 13px; }
+.overview-review-note p { margin: 4px 0 0; font-size: 12px; line-height: 1.6; max-width: 80ch; }
+.overview-issues { border-top: 1px solid var(--overview-border); }
+.overview-issues > summary { padding: 15px 28px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--overview-ink); }
+.overview-issues > summary span { font-size: 12px; font-weight: 400; color: var(--text-secondary); margin-left: 12px; }
+.overview-issue-content { padding: 0 28px 24px; }
+.overview-issue-content p { font-size: 13px; line-height: 1.6; max-width: 90ch; margin: 12px 0; }
+.overview-gap { padding: 14px 0; font-size: 13px; }
+.overview-months { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.overview-months span { padding: 4px 8px; border-radius: 5px; background: #fff8eb; border: 1px solid #f2dfb7; color: #70480c; font-size: 12px; }
+.overview-conflict-group { border: 1px solid var(--overview-border); border-radius: 8px; padding: 14px 16px; margin: 10px 0; }
+.overview-conflict-group summary { cursor: pointer; font-size: 13px; }
+.overview-conflict-group summary span { margin-left: 12px; color: var(--text-secondary); }
+.overview-source { overflow-wrap: anywhere; max-width: 260px; }
+.overview-section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 26px 0 12px; }
+.overview-section-title h3 { margin: 0; font-size: 17px; font-weight: 650; color: var(--overview-ink); }
+.overview-section-title > span { color: var(--text-muted); font-size: 12px; }
+.overview-results .kpi-card { box-shadow: none; border-radius: 10px; padding: 20px; }
+.overview-results .kpi-label { text-transform: none; letter-spacing: 0; font-size: 13px; }
+.overview-results .kpi-value { font-size: clamp(22px, 2.1vw, 32px); }
+.overview-results .kpi-desc { line-height: 1.6; }
+.overview-results .scorecard { flex-wrap: wrap; gap: 16px 0; }
+.overview-results summary:focus-visible, .overview-results button:focus-visible, .overview-results a:focus-visible { outline: 3px solid #2563eb; outline-offset: 3px; }
+@media (max-width: 900px) {
+ .overview-period-top { flex-wrap: wrap; }
+ .overview-period-actions { flex-direction: row; flex-wrap: wrap; align-items: center; }
+ .overview-health { grid-template-columns: repeat(2,minmax(0,1fr)); }
+ .overview-review-note { flex-wrap: wrap; }
+ .overview-section-title { flex-wrap: wrap; }
+}
+@media (max-width: 540px) {
+ .overview-period-top, .overview-review-note { padding: 18px; }
+ .overview-health { padding: 0 18px 18px; }
+ .overview-issues > summary { padding: 16px 18px; }
+ .overview-issues > summary span { display: block; margin: 6px 0 0; line-height: 1.5; }
+ .overview-issue-content { padding: 0 18px 18px; }
+ .overview-conflict-group summary span { display: block; margin: 6px 0 0; }
+ .overview-results .grid-4, .overview-results .grid-2 { grid-template-columns: 1fr; }
+}
