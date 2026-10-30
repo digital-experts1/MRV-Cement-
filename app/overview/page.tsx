@@ -39,6 +39,7 @@ function OverviewContent({ s }: { s: Store }) {
   const passed = s.qaqc.filter((r) => String(r.Status).toUpperCase() === "PASS").length;
   const failed = s.qaqc.filter((r) => String(r.Status).toUpperCase() === "FAIL").length;
   const notEvaluated = s.qaqc.filter((r) => r.Status === "NOT_EVALUATED").length;
+  const warnings = s.qaqc.filter((r) => r.Status === "WARNING").length;
   const qaPct = s.qaPassPct;
 
   const evTotal = s.evidence.length;
@@ -207,6 +208,10 @@ function OverviewContent({ s }: { s: Store }) {
               <div className="scorecard-metric" style={{ padding: "0 24px" }}>
                 <div className="sc-val" style={{ color: notEvaluated > 0 ? "var(--qa-warn)" : undefined }}>{notEvaluated}</div>
                 <div className="sc-label">Not evaluated</div>
+              </div>
+              <div className="scorecard-metric" style={{ padding: "0 24px" }}>
+                <div className="sc-val" style={{ color: warnings > 0 ? "var(--qa-warn)" : undefined }}>{warnings}</div>
+                <div className="sc-label">Warnings</div>
               </div>
               <div className="scorecard-metric" style={{ padding: "0 24px" }}>
                 <div className="sc-val sc-info">{total}</div>
