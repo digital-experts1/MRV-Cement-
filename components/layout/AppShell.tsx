@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
+import { usePathname } from "next/navigation";
+import { AuthLayout } from "./AuthLayout";
 import { StaleScopeError, useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { ExplainerModal } from "@/components/ui/ExplainerModal";
@@ -13,6 +15,7 @@ import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
   const { collapsed, navOpen, closeNav, openUpload, setParseError } = useStore();
   const { importFile } = useScope();
 
@@ -26,6 +29,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [navOpen, closeNav]);
 
   const shellClass = [collapsed ? "collapsed" : "", navOpen ? "nav-open" : ""].filter(Boolean).join(" ");
+
+  if (pathname === "/signin" || pathname === "/signup" || pathname === "/reset-password") {
+    return <AuthLayout>{children}</AuthLayout>;
+  }
 
   return (
     <div

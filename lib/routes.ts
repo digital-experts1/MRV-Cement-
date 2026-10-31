@@ -47,12 +47,11 @@ export const ROUTES: Record<RouteKey, RouteDef> = {
 };
 
 export const NAV_SECTIONS: { label: string; keys: RouteKey[] }[] = [
-  { label: "Workspace", keys: ["overview", "dataentry"] },
+  { label: "Workspace", keys: ["overview", "analytics", "dataentry"] },
   { label: "Governance", keys: ["governance", "setup"] },
   { label: "Data Inputs", keys: ["dcs", "production", "rawmaterial", "kilnfuel", "electricity"] },
   { label: "Factors", keys: ["constants"] },
   { label: "Outputs", keys: ["calculations", "qaqc", "reportouts"] },
   { label: "Evidence & References", keys: ["evidence", "regulatory"] },
-  { label: "Analytics", keys: ["analytics"] },
   { label: "Organization", keys: ["portfolio", "access"] },
 ];
