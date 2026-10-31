@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import "./overview.css";
-import { DonutChart } from "@/components/charts/ChartCanvas";
+import { ReadingsExplorer } from "@/components/overview/ReadingsExplorer";
+import { EmissionsVisual } from "@/components/overview/EmissionsVisual";
 import { Icon } from "@/components/icons/Icon";
 import { QaDot } from "@/components/ui/Badge";
 import { Fmt } from "@/components/ui/Fmt";
@@ -72,7 +73,8 @@ function OverviewContent({ s }: { s: Store }) {
   });
 
   return (
-    <div className="overview-results">
+    <div className="overview-results overview-analytics">
+      <nav className="overview-jump-links" aria-label="Overview sections"><a href="#overview-performance">Performance</a><a href="#overview-coverage">Coverage</a><a href="#overview-qa">QA/QC</a><a href="#overview-metrics">Calculated metrics</a><a href="#overview-readings">Readings & inputs</a></nav>
       <PageHeader
         icon="home"
         title="Overview"
@@ -87,7 +89,7 @@ function OverviewContent({ s }: { s: Store }) {
         }
       />
 
-      <section className="overview-period mb-lg" aria-label="Reporting period coverage">
+      <section id="overview-coverage" className="overview-period mb-lg" aria-label="Reporting period coverage">
         <div className="overview-period-top">
           <div>
             <h3>Reporting period</h3>
@@ -140,21 +142,23 @@ function OverviewContent({ s }: { s: Store }) {
         </details>
       </section>
 
-      <div className="overview-section-title"><h3>Production & energy</h3><span>Selected reporting period</span></div>
-      <div className="grid-4 mb-lg">
-        <KpiCard label="Clinker Production" value={fmtRaw(clinkerProd, 0)} unit="t" desc="Total kiln clinker produced in period" explainKey="kpi-clinker-prod" className="accent-card" />
-        <KpiCard label="Cement Production" value={fmtRaw(cementProd, 0)} unit="t" desc="Total finished cement dispatched" explainKey="kpi-cement-prod" className="accent-card" />
-        <KpiCard label="Clinker Factor" value={fmtRaw(clinkerFactor, 3)} unit="ratio" desc="Proportion of clinker per ton of cement" explainKey="kpi-clinker-factor" />
-        <KpiCard label="Specific Heat" value={fmtRaw(shc, 3)} unit="GJ/t clinker" desc="Thermal energy consumed per ton clinker" explainKey="kpi-specific-heat" />
-      </div>
-
-      <div className="overview-section-title"><h3>Emissions performance</h3><span>Calculated from selected readings and factors</span></div>
-      <div className="grid-4 mb-lg">
-        <KpiCard label="Direct Embedded CO₂" value={fmtRaw(directCO2, 0)} unit="tCO₂" desc="Process calcination + fuel combustion" explainKey="kpi-direct-co2" />
-        <KpiCard label="Total Embedded CO₂" value={fmtRaw(totalCO2, 0)} unit="tCO₂" desc="Scope 1 direct + Scope 2 grid electricity" explainKey="kpi-total-co2" />
-        <KpiCard label="SEE Cement" value={fmtRaw(seeCement, 4)} unit="tCO₂/t cement" desc="Specific embedded emissions intensity" explainKey="kpi-see-cement" />
-        <KpiCard label="Thermal Substitution" value={tsrVal} unit={tsrVal !== "—" ? "%" : ""} desc="Alternative fuel thermal share" explainKey="kpi-tsr" />
-      </div>
+      <section id="overview-performance" className="overview-performance" aria-label="Production, emissions and efficiency">
+        <div className="overview-performance-group"><header><Icon name="bar-chart-2" size={19} /><h2>Production</h2><span>Selected period</span></header>
+          <KpiCard label="Cement production" value={fmtRaw(cementProd, 0)} unit="t" desc="Finished cement output" explainKey="kpi-cement-prod" className="overview-lead-metric" />
+          <KpiCard label="Clinker production" value={fmtRaw(clinkerProd, 0)} unit="t" desc="Total kiln clinker produced" explainKey="kpi-clinker-prod" />
+          <KpiCard label="Clinker factor" value={fmtRaw(clinkerFactor, 3)} unit="ratio" desc="Clinker content per tonne of cement" explainKey="kpi-clinker-factor" />
+        </div>
+        <div className="overview-performance-group overview-emission-group"><header><Icon name="bar-chart-2" size={19} /><h2>Emissions</h2><span>Calculated totals</span></header>
+          <KpiCard label="Total embedded CO₂" value={fmtRaw(totalCO2, 2)} unit="tCO₂" desc="Direct emissions + grid electricity" explainKey="kpi-total-co2" className="overview-lead-metric" />
+          <KpiCard label="Direct embedded CO₂" value={fmtRaw(directCO2, 2)} unit="tCO₂" desc="Process calcination + fuel combustion" explainKey="kpi-direct-co2" />
+          <KpiCard label="Cement emissions intensity" value={fmtRaw(seeCement, 4)} unit="tCO₂/t cement" desc="Specific embedded emissions" explainKey="kpi-see-cement" />
+        </div>
+        <div className="overview-performance-group overview-efficiency-group"><header><Icon name="bar-chart-2" size={19} /><h2>Energy efficiency</h2></header>
+          <KpiCard label="Specific heat" value={fmtRaw(shc, 3)} unit="GJ/t clinker" desc="Thermal energy per tonne of clinker" explainKey="kpi-specific-heat" />
+          <KpiCard label="Thermal substitution" value={tsrVal} unit={tsrVal !== "—" ? "%" : ""} desc="Alternative fuel thermal share" explainKey="kpi-tsr" />
+          <a href="#overview-readings" className="overview-reading-link">Explore source readings <Icon name="chevron-right" size={15} /></a>
+        </div>
+      </section>
 
       <div className="grid-2 mb-lg">
         <div className="chart-card">
@@ -166,9 +170,7 @@ function OverviewContent({ s }: { s: Store }) {
             <span className="badge badge-accent">{fmtRaw(totalCO2, 0)} tCO₂ total</span>
           </div>
           <div className="donut-split">
-            <div className="chart-container donut-chart">
-              <DonutChart breakdown={breakdown} />
-            </div>
+            <EmissionsVisual breakdown={breakdown} />
             <div style={{ flex: 1 }}>
               {breakdown.map((d) => (
                 <div className="metric-row" key={d.component}>
@@ -219,7 +221,7 @@ function OverviewContent({ s }: { s: Store }) {
         </div>
       </div>
 
-      <div className="grid-2 mb-lg">
+      <div id="overview-qa" className="grid-2 mb-lg">
         <div className="section-card">
           <SectionHeader
             icon="check-circle"
@@ -345,7 +347,7 @@ function OverviewContent({ s }: { s: Store }) {
         </div>
       </div>
 
-      <div className="section-card">
+      <div id="overview-metrics" className="section-card">
         <SectionHeader
           icon="calculator"
           title="All Calculated Metrics"
@@ -382,6 +384,16 @@ function OverviewContent({ s }: { s: Store }) {
           </div>
         </div>
       </div>
+      <section className="section-card overview-review-panel" aria-label="Data quality actions">
+        <h2>Review & follow-up</h2>
+        <p>{failed} failed checks · {warnings} warnings · {notEvaluated} not evaluated · {s.completeness.pct}% of required fields complete</p>
+        <details><summary>QA/QC messages requiring attention ({failed + warnings + notEvaluated})</summary>
+          {s.qaqc.filter(r => String(r.Status).toUpperCase() !== "PASS").map((r, i) => <div className="overview-check-message" key={i}>{Object.entries(r).map(([key, value]) => <p key={key}><strong>{key}: </strong>{value === null || value === undefined ? "Missing" : String(value)}</p>)}</div>)}
+          <Link href="/qaqc" className="btn btn-secondary">View all checks</Link>
+        </details>
+        <details><summary>Missing required fields ({s.completeness.missing.length})</summary>{s.completeness.missing.length ? <ul>{s.completeness.missing.map((field, i) => <li key={i}>{field}</li>)}</ul> : <p>No missing required fields.</p>}</details>
+      </section>
+      <ReadingsExplorer key={`${scope.facility?.id ?? "local"}:${s.meta.run?.id ?? s.meta.revision ?? "dataset"}`} s={s} />
     </div>
   );
 }

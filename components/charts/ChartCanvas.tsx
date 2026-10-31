@@ -192,10 +192,10 @@ export function BarChart({
             ? {
                 ...TOOLTIP_CFG,
                 callbacks: {
-                  label: (ctx) => `  ${ctx.dataset.label}: ${new Intl.NumberFormat("en-US").format(ctx.parsed.y ?? 0)}${yUnit ? " " + yUnit : ""}`,
+                  label: (ctx) => `  ${ctx.dataset.label}: ${new Intl.NumberFormat("en-US").format((horizontal ? ctx.parsed.x : ctx.parsed.y) ?? 0)}${yUnit ? " " + yUnit : ""}`,
                 },
               }
-            : { enabled: false },
+            : { ...TOOLTIP_CFG, callbacks: { label: (ctx) => `${new Intl.NumberFormat("en-US").format((horizontal ? ctx.parsed.x : ctx.parsed.y) ?? 0)}${yUnit ? " " + yUnit : ""}` } },
         },
       },
     };
