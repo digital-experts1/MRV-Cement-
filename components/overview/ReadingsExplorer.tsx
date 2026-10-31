@@ -47,7 +47,7 @@ export function ReadingsExplorer({ s }: { s: Store }) {
   }
   return <section className="section-card overview-explorer" id="overview-readings" aria-label="Readings and source inputs">
     <div className="overview-explorer-heading"><div><h2>Readings & source inputs</h2><p>Every input row used by the displayed calculation. Original fields, units and provenance are retained.</p></div>
-      {scope.readingsPeriod && <button className="btn btn-secondary" type="button" disabled={scope.loading} onClick={scope.openReadingsPeriod}>Show full stored period</button>}
+      {scope.readingsPeriod && <button className="btn btn-secondary" type="button" disabled={scope.calculating} onClick={scope.openReadingsPeriod}>Show full stored period</button>}
     </div>
     <div className="overview-input-tabs" aria-label="Input sections">{SECTIONS.map(([key, label]) => <button type="button" key={key} aria-pressed={section === key} onClick={() => { setSection(key); setPage(0); setSort(null); setQuery(""); }}>{label} <span>{s.inputs[key].length}</span></button>)}</div>
     <div className="overview-table-tools"><label>Search all fields <input type="search" value={query} onChange={e => { setQuery(e.target.value); setPage(0); }} placeholder="Find a reading, fuel, date or source" /></label>
