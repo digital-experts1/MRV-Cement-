@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
+import { SourceCharts } from "@/components/overview/SourceCharts";
 import "./overview.css";
 import { ReadingsExplorer } from "@/components/overview/ReadingsExplorer";
 import { EmissionsVisual } from "@/components/overview/EmissionsVisual";
@@ -21,6 +23,7 @@ import type { Store } from "@/lib/types";
 function OverviewContent({ s }: { s: Store }) {
   const { showExplanation } = useExplainer();
   const scope = useScope();
+  const [metricSearch, setMetricSearch] = useState("");
   const coverage = scope.coverage;
   const discrepancies = coverage?.reconciliations?.filter((r) => r.status === "discrepancy") ?? [];
   const conflictGroups = Object.entries(Object.groupBy(discrepancies, (r) => r.section));
@@ -221,6 +224,8 @@ function OverviewContent({ s }: { s: Store }) {
         </div>
       </div>
 
+      <SourceCharts key={s.meta.run?.id ?? s.meta.revision ?? "local"} s={s} />
+
       <div id="overview-qa" className="grid-2 mb-lg">
         <div className="section-card">
           <SectionHeader
@@ -351,7 +356,7 @@ function OverviewContent({ s }: { s: Store }) {
         <SectionHeader
           icon="calculator"
           title="All Calculated Metrics"
-          actions={<span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>Computed by the platform engine</span>}
+          actions={<input className="overview-metric-search" type="search" aria-label="Search calculated metrics" placeholder="Find a metric or source" value={metricSearch} onChange={e => setMetricSearch(e.target.value)} />}
         />
         <div className="section-card-body no-pad">
           <div className="table-wrapper" style={{ border: "none" }}>
@@ -366,7 +371,7 @@ function OverviewContent({ s }: { s: Store }) {
                 </tr>
               </thead>
               <tbody>
-                {s.calcRows.map((r) => (
+                {s.calcRows.filter(r => Object.values(r).some(v => String(v ?? "").toLowerCase().includes(metricSearch.toLowerCase()))).map((r) => (
                     <tr key={String(r.Metric)}>
                       <td>
                         <strong>{String(r.Metric)}</strong>

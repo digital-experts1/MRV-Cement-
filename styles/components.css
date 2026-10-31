@@ -1279,3 +1279,8 @@
 .overview-analytics input:focus-visible,.overview-analytics select:focus-visible { outline:3px solid #1765e8; outline-offset:3px; }
 @media(max-width:1100px) { .overview-performance { grid-template-columns:1fr 1fr; } .overview-efficiency-group { grid-column:1/-1; display:grid; grid-template-columns:1fr 1fr; column-gap:30px; border-top:1px solid #dce5ed; } .overview-efficiency-group header,.overview-reading-link { grid-column:1/-1; } .overview-performance-group:nth-child(2) { border-right:0; } }
 @media(max-width:650px) { .overview-performance { grid-template-columns:1fr; } .overview-performance-group { border-right:0; border-bottom:1px solid #dce5ed; padding:18px; } .overview-efficiency-group { grid-column:auto; display:block; } .overview-performance-group:last-child { border-bottom:0; } .overview-explorer-heading,.overview-table-tools { padding:16px; } .overview-input-tabs { padding:0 16px 16px; } .overview-emissions-visual { min-width:0; width:100%; } }
+.overview-source-charts .chart-container { height:260px; }
+.overview-source-charts .chart-card-header { flex-wrap:wrap; gap:10px; }
+.overview-source-charts label { font-size:12px; color:#435f78; }
+.overview-source-charts select,.overview-metric-search { padding:8px 10px; min-height:38px; border:1px solid #cbd8e5; border-radius:6px; color:#203b55; background:white; }
+.overview-source-charts p { font-size:11px; color:#526b82; line-height:1.6; margin:12px 0 0; }
