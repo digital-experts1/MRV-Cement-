@@ -5,7 +5,7 @@ import { RequireWorkbook } from "@/components/ui/RequireWorkbook";
 import type { Store } from "@/lib/types";
 
 function GovernanceContent({ s }: { s: Store }) {
-  const controls = [
+  const controls: [string, unknown][] = [
     ["Installation", s.setup["Installation / site"]],
     ["Country", s.setup["Country"]],
     ["Period start", s.setup["Period start"]],
