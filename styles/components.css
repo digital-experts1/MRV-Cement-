@@ -1284,3 +1284,7 @@
 .overview-source-charts label { font-size:12px; color:#435f78; }
 .overview-source-charts select,.overview-metric-search { padding:8px 10px; min-height:38px; border:1px solid #cbd8e5; border-radius:6px; color:#203b55; background:white; }
 .overview-source-charts p { font-size:11px; color:#526b82; line-height:1.6; margin:12px 0 0; }
+/* Let the overview shrink within the application grid; wide reading tables scroll internally. */
+#content:has(.overview-analytics) { min-width:0; }
+.overview-analytics .grid-2 > *, .overview-analytics .section-card, .overview-analytics .chart-card { min-width:0; }
+@media(max-width:650px) { .overview-analytics .section-header { flex-wrap:wrap; gap:10px; } .overview-metric-search { max-width:100%; } }
