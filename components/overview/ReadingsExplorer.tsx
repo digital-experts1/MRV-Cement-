@@ -22,7 +22,8 @@ export function ReadingsExplorer({ s }: { s: Store }) {
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(25);
   const [sort, setSort] = useState<{ key: string; ascending: boolean } | null>(null);
-  const rows: SheetRow[] = s.inputs[section];
+  const setupRows = useMemo(() => s.inputs.setupRows.length ? s.inputs.setupRows : Object.entries(s.inputs.setup).map(([Parameter, Value]) => ({ Parameter, Value })), [s.inputs]);
+  const rows: SheetRow[] = section === "setupRows" ? setupRows : s.inputs[section];
   const columns = useMemo(() => [...new Set(rows.flatMap(row => Object.keys(row)))], [rows]);
   const filtered = useMemo(() => {
     const items = rows.map((row, index) => ({ row, index })).filter(({ row }) => Object.values(row).some(v => cell(v).toLowerCase().includes(query.toLowerCase())));
@@ -49,7 +50,7 @@ export function ReadingsExplorer({ s }: { s: Store }) {
     <div className="overview-explorer-heading"><div><h2>Readings & source inputs</h2><p>Every input row used by the displayed calculation. Original fields, units and provenance are retained.</p></div>
       {scope.readingsPeriod && <button className="btn btn-secondary" type="button" disabled={scope.calculating} onClick={scope.openReadingsPeriod}>Show full stored period</button>}
     </div>
-    <div className="overview-input-tabs" aria-label="Input sections">{SECTIONS.map(([key, label]) => <button type="button" key={key} aria-pressed={section === key} onClick={() => { setSection(key); setPage(0); setSort(null); setQuery(""); }}>{label} <span>{s.inputs[key].length}</span></button>)}</div>
+    <div className="overview-input-tabs" aria-label="Input sections">{SECTIONS.map(([key, label]) => <button type="button" key={key} aria-pressed={section === key} onClick={() => { setSection(key); setPage(0); setSort(null); setQuery(""); }}>{label} <span>{key === "setupRows" ? setupRows.length : s.inputs[key].length}</span></button>)}</div>
     <div className="overview-table-tools"><label>Search all fields <input type="search" value={query} onChange={e => { setQuery(e.target.value); setPage(0); }} placeholder="Find a reading, fuel, date or source" /></label>
       <label>Rows per page <select value={size} onChange={e => { setSize(Number(e.target.value)); setPage(0); }}>{[10,25,50,100].map(n => <option key={n}>{n}</option>)}</select></label>
       <button className="btn btn-secondary" type="button" disabled={!filtered.length} onClick={exportCsv}>Export filtered readings (.csv)</button>
