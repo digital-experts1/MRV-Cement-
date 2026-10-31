@@ -75,3 +75,21 @@ export interface FacilitySummary {
   /** Latest dataset archive of this facility (shown so an empty dashboard explains itself). */
   archive: { reason: string; at: string } | null;
 }
+
+/** Evidence document stored in the private bucket (mirror of lib/server/mrv/service.ts). */
+export interface EvidenceDocumentView {
+  id: string;
+  evidenceId: string;
+  category: string | null;
+  coverageStart: string | null;
+  coverageEnd: string | null;
+  filename: string;
+  mime: string;
+  sizeBytes: number;
+  sha256: string;
+  uploadedBy: string;
+  uploadedByMe: boolean;
+  createdAt: string;
+  isCurrent: boolean;
+  supersededBy: string | null;
+}

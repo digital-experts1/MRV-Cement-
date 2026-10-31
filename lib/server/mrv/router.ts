@@ -2,8 +2,9 @@ import { isAllowedRequestOrigin } from "@/lib/server/requestOrigin";
 import { badRequest, HttpError, notFound, unauthenticated } from "@/lib/server/authz/errors";
 import { authenticateRequest, type MrvCaller } from "@/lib/server/supabase/auth";
 import {
-  archiveDataset, calculateRange, createOrganization, facilitySummary, getMe, importDemo, importFile, importManual, latestRun, listFacilities,
-  listImports, listReportImpacts, listRuns, loadRun, readingHistory, savePreference, withdrawReading,
+  archiveDataset, calculateRange, createOrganization, evidenceDocumentUrl, facilitySummary, getMe, importDemo, importFile, importManual,
+  latestRun, listEvidenceDocuments, listEvidenceRegister, listFacilities, listImports, listReportImpacts, listRuns, loadRun,
+  readingHistory, savePreference, uploadEvidenceDocument, withdrawReading,
 } from "./service";
 
 type Params = Record<string, string>;
@@ -18,6 +19,7 @@ type Handler = (ctx: Ctx) => Promise<unknown>;
 
 const MAX_JSON_BYTES = 5_000_000;
 const MAX_UPLOAD_BYTES = 20_000_000;
+const MAX_EVIDENCE_BYTES = 10_000_000;
 
 const rangeFromQuery = (url: URL): unknown => {
   const raw = url.searchParams.get("range");
@@ -68,6 +70,26 @@ const routes: [string, string, Handler][] = [
     },
   ],
   ["GET", "/orgs/:t/facilities/:f/runs/:id", ({ caller, params }) => loadRun(caller, params.t, params.f, params.id)],
+  ["GET", "/orgs/:t/facilities/:f/evidence-register", ({ caller, params }) => listEvidenceRegister(caller, params.t, params.f)],
+  ["GET", "/orgs/:t/facilities/:f/evidence-documents", ({ caller, params }) => listEvidenceDocuments(caller, params.t, params.f)],
+  [
+    "POST",
+    "/orgs/:t/facilities/:f/evidence-documents",
+    async ({ caller, params, req, url }) => {
+      const bytes = new Uint8Array(await req.arrayBuffer());
+      if (!bytes.byteLength || bytes.byteLength > MAX_EVIDENCE_BYTES) throw badRequest("Upload must be 1 byte – 10 MB");
+      return uploadEvidenceDocument(caller, params.t, params.f, {
+        filename: url.searchParams.get("filename") ?? "document.bin",
+        bytes,
+        evidenceId: url.searchParams.get("evidenceId") ?? "",
+        category: url.searchParams.get("category"),
+        start: url.searchParams.get("start"),
+        end: url.searchParams.get("end"),
+        replace: url.searchParams.get("replace"),
+      });
+    },
+  ],
+  ["GET", "/orgs/:t/facilities/:f/evidence-documents/:id/url", ({ caller, params }) => evidenceDocumentUrl(caller, params.t, params.f, params.id)],
 ];
 
 function match(pattern: string, path: string): Params | null {

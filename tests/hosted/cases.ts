@@ -18,6 +18,11 @@ import { MAPPING_VERSION, type ImportMapping } from "@/lib/mrv/importMapping";
 import { toConfigDrafts, toReadingDrafts, type StoredReading } from "@/lib/mrv/readings";
 import { effectivePeriod, importBody, planRun, type ConfigDoc, type ImportBatchMeta } from "@/lib/mrv/executorPayload";
 import { signExecutorRequest, type ExecutorKey, type ExecutorPurpose } from "@/lib/mrv/executorSign";
+import { EVIDENCE_MAX_BYTES, evidenceDocumentBody, evidenceStoragePath, validateEvidenceFile } from "@/lib/mrv/evidenceFiles";
+import { sha256Bytes } from "@/lib/mrv/sha";
+import { createEmptyInput, type SheetRow } from "@/lib/types";
+import { evidenceDocumentUrl, listEvidenceDocuments, uploadEvidenceDocument } from "@/lib/server/mrv/service";
+import type { MrvCaller } from "@/lib/server/supabase/auth";
 
 export interface HostedCheck {
   label: string;
@@ -323,6 +328,118 @@ export async function runHostedCases(): Promise<HostedResult> {
     check("B cannot upload into A's storage path", !!bUp.error, errText(bUp.error));
     const pub = await fetch(`${env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/mrv-private/${path}`);
     check("no public URL access to the private bucket", pub.status >= 400, { status: pub.status });
+
+    // ── Evidence documents (private bucket + trusted executor + register linkage) ──
+    const callerOf = (who: { db: SupabaseClient; uid: string }): MrvCaller => ({ db: who.db, user: { id: who.uid, email: null } });
+    const EV_ID = `HOSTED-DOC-${String(Date.now() % 1_000_000).padStart(6, "0")}`;
+    const EV_ROW: SheetRow = { "Evidence ID": EV_ID, "Evidence Type": "Invoice", Description: "SYNTHETIC hosted E2E evidence reference (not real evidence)", Owner: "E2E A", Status: "Pending" };
+    // (a) Register a clearly-labelled synthetic reference through the real config-only import path (as saveManual does).
+    const evDrafts = toConfigDrafts({ ...createEmptyInput("manual"), evidence: [EV_ROW] }).filter((d) => d.kind === "evidence_register");
+    const evBatch: ImportBatchMeta = {
+      id: crypto.randomUUID(), origin: "manual", status: "accepted", filename: "HOSTED_EVIDENCE_REGISTER", sha256: null, size_bytes: null, mime: null, storage_path: null,
+      errors: [], assertions: [], declared_period_start: null, declared_period_end: null, synthetic: true, mapping: null, effective_from: null, effective_to: null, effective_basis: null,
+    };
+    const evRegBody = importBody(evBatch, [], evDrafts);
+    const evReg = await rpc(A.db, "mrv_import_v2", t, e1, evRegBody, sign(A.uid, "import", t, e1, evRegBody));
+    check("evidence reference registered before any calculation exists (config-only import)", !evReg.error && (evReg.data as { status?: string })?.status === "accepted", evReg.error ? errText(evReg.error) : evReg.data);
+    const latestReg = await A.db.from("config_document").select("content").eq("tenant_id", t).eq("facility_id", e1).eq("kind", "evidence_register").order("created_at", { ascending: false }).limit(1).maybeSingle();
+    check("the registered reference is the latest evidence_register document", !latestReg.error && ((latestReg.data?.content as SheetRow[] | null) ?? []).some((r) => String(r["Evidence ID"]) === EV_ID), errText(latestReg.error));
+
+    // (b) Upload through the real service (server validation → private bucket → trusted executor metadata write).
+    const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, ...new Array(64).fill(0x42)]);
+    let doc1 = "";
+    try {
+      const up1 = await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}.pdf`, bytes: PDF_BYTES, evidenceId: EV_ID, category: "electricity", start: "2025-01-01", end: "2025-01-31" });
+      doc1 = up1.documentId;
+    } catch (e) {
+      check("document stored through the real service (private bucket + trusted executor)", false, e instanceof Error ? e.message : String(e));
+    }
+    check("document stored through the real service (private bucket + trusted executor)", !!doc1, doc1);
+    const docsA = await listEvidenceDocuments(callerOf(A), t, e1);
+    const d1 = docsA.find((d) => d.id === doc1);
+    check(
+      "document metadata complete (reference, category, coverage, checksum, uploader, current)",
+      !!d1 && d1.evidenceId === EV_ID && d1.category === "electricity" && d1.coverageStart === "2025-01-01" && d1.coverageEnd === "2025-01-31"
+        && d1.uploadedByMe && d1.isCurrent && d1.sizeBytes === PDF_BYTES.byteLength && d1.sha256 === sha256Bytes(PDF_BYTES),
+      d1 ?? "not found"
+    );
+    const evUrl = await evidenceDocumentUrl(callerOf(A), t, e1, doc1);
+    const evFetched = await fetch(evUrl.url);
+    const evFetchedBytes = new Uint8Array(await evFetched.arrayBuffer());
+    check("short-lived signed URL serves exactly the stored bytes", evFetched.ok && evFetchedBytes.byteLength === PDF_BYTES.byteLength, { status: evFetched.status, bytes: evFetchedBytes.byteLength });
+
+    // (c) Authorization and isolation.
+    const bDocs = await B.db.from("evidence_document").select("id", { count: "exact", head: true }).eq("tenant_id", t);
+    check("B (other organization) reads none of A's evidence documents", (bDocs.count ?? 0) === 0, { n: bDocs.count });
+    let bUrlErr = "";
+    try { await evidenceDocumentUrl(callerOf(B), t, e1, doc1); } catch (e) { bUrlErr = e instanceof Error ? e.message : String(e); }
+    check("B is refused a signed URL for A's document", /denied|forbidden|not found|permission/i.test(bUrlErr), bUrlErr);
+    const evDirect = await A.db.from("evidence_document").insert({ tenant_id: t, facility_id: e1, evidence_id: EV_ID, filename: "direct.pdf", mime: "application/pdf", size_bytes: 8, sha256: "0".repeat(64), storage_path: `${t}/${e1}/evidence/${crypto.randomUUID()}/direct.pdf`, uploaded_by: A.uid });
+    check("direct PostgREST INSERT of an evidence document is denied", !!evDirect.error, errText(evDirect.error));
+
+    const expectServiceError = async (label: string, re: RegExp, fn: () => Promise<unknown>) => {
+      try {
+        await fn();
+        check(label, false, "no error was raised");
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        check(label, re.test(m), m);
+      }
+    };
+    await expectServiceError("upload for an unregistered evidence reference is refused", /Register the evidence reference first/, () => uploadEvidenceDocument(callerOf(A), t, e1, { filename: "orphan.pdf", bytes: PDF_BYTES, evidenceId: "NOT-REGISTERED" }));
+    await expectServiceError("unsupported file type is refused server-side", /not a supported evidence file/, () => uploadEvidenceDocument(callerOf(A), t, e1, { filename: "notes.txt", bytes: new TextEncoder().encode("x"), evidenceId: EV_ID }));
+    await expectServiceError("renamed content is refused server-side", /does not match/, () => uploadEvidenceDocument(callerOf(A), t, e1, { filename: "fake.pdf", bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]), evidenceId: EV_ID }));
+    await expectServiceError("oversized file is refused", /10 MB or smaller/, () => uploadEvidenceDocument(callerOf(A), t, e1, { filename: "big.pdf", bytes: new Uint8Array(EVIDENCE_MAX_BYTES + 1), evidenceId: EV_ID }));
+    await expectServiceError("empty file is refused", /empty/i, () => uploadEvidenceDocument(callerOf(A), t, e1, { filename: "empty.pdf", bytes: new Uint8Array(0), evidenceId: EV_ID }));
+    await expectServiceError("reversed coverage is refused", /before coverage start/, () => uploadEvidenceDocument(callerOf(A), t, e1, { filename: "invoice.pdf", bytes: PDF_BYTES, evidenceId: EV_ID, start: "2025-02-01", end: "2025-01-01" }));
+    await expectServiceError("B cannot upload evidence into A's factory", /denied|forbidden|not found|permission/i, () => uploadEvidenceDocument(callerOf(B), t, e1, { filename: "b.pdf", bytes: PDF_BYTES, evidenceId: EV_ID }));
+    await expectServiceError("restricted user C cannot upload evidence into E2", /denied|forbidden|not found|permission/i, () => uploadEvidenceDocument(callerOf(C), t, e2, { filename: "c.pdf", bytes: PDF_BYTES, evidenceId: EV_ID }));
+
+    // (d) Tampering: the evidence-purpose signature is bound to operation, actor, scope and body.
+    const tamperId = crypto.randomUUID();
+    const tamperBody = evidenceDocumentBody({
+      evidenceId: EV_ID, category: null, coverageStart: null, coverageEnd: null, documentId: tamperId, filename: "tamper.pdf",
+      mime: "application/pdf", sizeBytes: PDF_BYTES.byteLength, sha256: sha256Bytes(PDF_BYTES),
+      storagePath: evidenceStoragePath(t, e1, tamperId, "tamper.pdf"), replaces: null,
+    });
+    const evTampered = await rpc(A.db, "mrv_store_evidence_document", t, e1, tamperBody, sign(A.uid, "import", t, e1, tamperBody));
+    check("an import-purpose signature cannot store evidence documents", !!evTampered.error && /does not match/.test(errText(evTampered.error)), errText(evTampered.error));
+    const evUnsigned = await rpc(A.db, "mrv_store_evidence_document", t, e1, tamperBody, null);
+    check("an unsigned evidence-document store is refused", !!evUnsigned.error && /authorization required/.test(errText(evUnsigned.error)), errText(evUnsigned.error));
+    const evCrossUser = await rpc(B.db, "mrv_store_evidence_document", t, e1, tamperBody, sign(A.uid, "evidence", t, e1, tamperBody));
+    check("another user presenting A's evidence signature is refused", !!evCrossUser.error, errText(evCrossUser.error));
+    const evTamperRows = await A.db.from("evidence_document").select("id", { count: "exact", head: true }).eq("id", tamperId);
+    check("no metadata row was created by any tampering attempt", (evTamperRows.count ?? 0) === 0, { n: evTamperRows.count });
+
+    // (e) Replacement history + failed-upload cleanup.
+    const up2 = await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v2.pdf`, bytes: new Uint8Array([...PDF_BYTES.slice(0, 8), ...new Array(64).fill(0x43)]), evidenceId: EV_ID, category: "electricity", start: "2025-01-01", end: "2025-01-31", replace: doc1 });
+    const docsAfterReplace = await listEvidenceDocuments(callerOf(A), t, e1);
+    const oldDoc = docsAfterReplace.find((d) => d.id === doc1);
+    const newDoc = docsAfterReplace.find((d) => d.id === up2.documentId);
+    check("replacement keeps history: v1 retired and superseded, v2 current", !!oldDoc && !oldDoc.isCurrent && oldDoc.supersededBy === up2.documentId && !!newDoc?.isCurrent, { oldDoc, newDoc });
+    let staleReplaceErr = "";
+    try {
+      await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v3.pdf`, bytes: PDF_BYTES, evidenceId: EV_ID, replace: doc1 });
+    } catch (e) {
+      staleReplaceErr = e instanceof Error ? e.message : String(e);
+    }
+    check("replacing an already-replaced document is refused", /no longer current/.test(staleReplaceErr), staleReplaceErr);
+    const evFolders = await A.db.storage.from("mrv-private").list(`${t}/${e1}/evidence`, { limit: 1000 });
+    const evStoredIds = new Set(((await A.db.from("evidence_document").select("id").eq("tenant_id", t).eq("facility_id", e1)).data ?? []).map((r) => r.id as string));
+    check(
+      "failed uploads leave no orphaned file in the bucket (every evidence folder matches a stored document)",
+      !evFolders.error && (evFolders.data ?? []).every((o) => evStoredIds.has(o.name)),
+      { folders: (evFolders.data ?? []).length, documents: evStoredIds.size, err: errText(evFolders.error) }
+    );
+    const cUp = await uploadEvidenceDocument(callerOf(C), t, e1, { filename: `hosted-evidence-${EV_ID}-c.pdf`, bytes: PDF_BYTES, evidenceId: EV_ID });
+    check("restricted user C (E1 facility manager) can upload evidence to E1", !!cUp.documentId, cUp);
+
+    // (f) Regression: E1's stored runs stay readable history and E2's calculations are untouched by E1 evidence.
+    const runAfter = await A.db.from("calculation_run").select("id").eq("id", run.data as string).maybeSingle();
+    check("E1's stored Q1 run remains readable after the evidence import", !runAfter.error && !!runAfter.data, errText(runAfter.error));
+    const e2PlanAgain = await plan(A.db, t, e2, q1Spec);
+    const e2RunAgain = e2PlanAgain.kind === "run" ? await rpc(A.db, "mrv_finalize_run", t, e2, e2PlanAgain.body, sign(A.uid, "run", t, e2, e2PlanAgain.body)) : null;
+    check("E2 calculations are unaffected by E1's evidence documents (same run reused)", !!e2RunAgain && !e2RunAgain.error && e2RunAgain.data === freshFin?.data, { err: errText(e2RunAgain?.error), same: e2RunAgain?.data === freshFin?.data });
 
     for (const c of [A, B, C, R]) await c.db.auth.signOut();
   } catch (e) {

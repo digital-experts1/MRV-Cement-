@@ -11,13 +11,14 @@ import { toIsoDate } from "@/lib/dates";
 import { parseDailyTotals } from "@/lib/mrv/dailyTotals";
 import { parseWorkbook } from "@/lib/parser";
 import { createSampleDataset } from "@/lib/sampleData";
-import { createEmptyInput, type DataOrigin, type MrvInput, type RowSource, type Store } from "@/lib/types";
+import { createEmptyInput, type DataOrigin, type MrvInput, type RowSource, type SheetRow, type Store } from "@/lib/types";
 import { badRequest, forbidden, HttpError, isUuid, notFound } from "@/lib/server/authz/errors";
 import { PRIVATE_BUCKET } from "@/integrations/supabase/client";
 import type { MrvCaller } from "@/lib/server/supabase/auth";
 import { addDays, isValidTimezone, resolveRange, validateSpec, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
 import { MAPPING_VERSION, parseMapping, type ImportMapping } from "@/lib/mrv/importMapping";
 import { toConfigDrafts, toReadingDrafts, type StoredReading } from "@/lib/mrv/readings";
+import { EVIDENCE_MAX_BYTES, evidenceDocumentBody, evidenceStoragePath, validateEvidenceFile, validateEvidenceMeta } from "@/lib/mrv/evidenceFiles";
 import type { Coverage } from "@/lib/mrv/rangeSelection";
 import { effectivePeriod, importBody, planRun, type ConfigDoc } from "@/lib/mrv/executorPayload";
 import { signExecutorRequest, type ExecutorPurpose } from "@/lib/mrv/executorSign";
@@ -262,7 +263,9 @@ async function recordImport(
   let errors = candidate._valid ? [] : candidate._errors.length ? candidate._errors : ["The file could not be validated."];
   const drafts = candidate._valid ? toReadingDrafts(candidate.inputs, args.mapping, `${origin}:${args.filename ?? "entry"}`) : { readings: [], errors: [] };
   errors = [...errors, ...drafts.errors];
-  if (!errors.length && drafts.readings.length === 0) errors.push("The file contains no readings.");
+  // Manual saves may carry configuration only (e.g. registering evidence before any reading exists); every
+  // file-based origin still requires readings.
+  if (!errors.length && drafts.readings.length === 0 && origin !== "manual") errors.push("The file contains no readings.");
   if (!errors.length && candidate.meta.synthetic && !ctx.synthetic) {
     errors.push("Synthetic demo data can only be stored in an organization marked as synthetic.");
   }
@@ -719,4 +722,141 @@ export async function archiveDataset(caller: MrvCaller, t: string, f: string, bo
     f,
     JSON.stringify({ reason: body.reason.trim(), ...(expectIn ? { expect: expectIn } : {}) })
   );
+}
+
+// ───────────────────────── Evidence documents ─────────────────────────
+/** Current Evidence Register rows: the facility's latest evidence_register configuration document. */
+export async function listEvidenceRegister(caller: MrvCaller, t: string, f: string): Promise<{ rows: SheetRow[] }> {
+  await requireFacility(caller, t, f, "facility.read");
+  return { rows: await currentEvidenceRegister(caller, t, f) };
+}
+
+async function currentEvidenceRegister(caller: MrvCaller, t: string, f: string): Promise<SheetRow[]> {
+  const cutoff = await archiveCutoff(caller, t, f);
+  let q = caller.db.from("config_document").select("content").eq("tenant_id", t).eq("facility_id", f).eq("kind", "evidence_register");
+  if (cutoff) q = q.gt("created_at", cutoff.toISOString());
+  const { data, error } = await q.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(1).maybeSingle();
+  if (error) throw dbFail(error);
+  return Array.isArray(data?.content) ? (data.content as SheetRow[]) : [];
+}
+
+export interface EvidenceDocumentView {
+  id: string;
+  evidenceId: string;
+  category: string | null;
+  coverageStart: string | null;
+  coverageEnd: string | null;
+  filename: string;
+  mime: string;
+  sizeBytes: number;
+  sha256: string;
+  uploadedBy: string;
+  uploadedByMe: boolean;
+  createdAt: string;
+  isCurrent: boolean;
+  supersededBy: string | null;
+}
+
+/** Every evidence document of the facility, superseded versions included (replacement history). */
+export async function listEvidenceDocuments(caller: MrvCaller, t: string, f: string): Promise<EvidenceDocumentView[]> {
+  await requireFacility(caller, t, f, "facility.read");
+  const { data, error } = await caller.db
+    .from("evidence_document")
+    .select("id, evidence_id, category, coverage_start, coverage_end, filename, mime, size_bytes, sha256, uploaded_by, created_at, is_current, superseded_by")
+    .eq("tenant_id", t)
+    .eq("facility_id", f)
+    .order("created_at", { ascending: false })
+    .order("id")
+    .limit(500);
+  if (error) throw dbFail(error);
+  return (data ?? []).map((d) => ({
+    id: d.id as string,
+    evidenceId: d.evidence_id as string,
+    category: (d.category as string | null) ?? null,
+    coverageStart: (d.coverage_start as string | null) ?? null,
+    coverageEnd: (d.coverage_end as string | null) ?? null,
+    filename: d.filename as string,
+    mime: d.mime as string,
+    sizeBytes: Number(d.size_bytes ?? 0),
+    sha256: d.sha256 as string,
+    uploadedBy: d.uploaded_by as string,
+    uploadedByMe: d.uploaded_by === caller.user.id,
+    createdAt: d.created_at as string,
+    isCurrent: Boolean(d.is_current),
+    supersededBy: (d.superseded_by as string | null) ?? null,
+  }));
+}
+
+/**
+ * Stores an evidence document in the private bucket and records its metadata through the trusted executor.
+ * The file is validated server-side (extension, size, magic bytes), the reference must exist in the register, and
+ * a failed metadata write removes the uploaded file again — no half-saved documents.
+ */
+export async function uploadEvidenceDocument(
+  caller: MrvCaller,
+  t: string,
+  f: string,
+  file: { filename: string; bytes: Uint8Array; evidenceId: string; category?: string | null; start?: string | null; end?: string | null; replace?: string | null }
+): Promise<{ documentId: string }> {
+  await requireFacility(caller, t, f, "upload.create");
+  if (file.bytes.byteLength > EVIDENCE_MAX_BYTES) throw badRequest("Evidence files must be 10 MB or smaller.");
+  const check = validateEvidenceFile(file.filename, file.bytes);
+  if ("error" in check) throw badRequest(check.error);
+  const meta = validateEvidenceMeta({ evidenceId: file.evidenceId, category: file.category, start: file.start, end: file.end });
+  if ("error" in meta) throw badRequest(meta.error);
+  if (file.replace != null && !isUuid(file.replace)) throw badRequest("Unknown replacement target");
+  // A document always belongs to a registered reference — registering before a calculation exists is fine.
+  const register = await currentEvidenceRegister(caller, t, f);
+  if (!register.some((r) => String(r["Evidence ID"] ?? "").trim() === meta.evidenceId)) {
+    throw badRequest("Register the evidence reference first, then upload its document.");
+  }
+  executorKey(); // fail before storing anything when the trusted executor is unavailable
+  const sha = sha256Bytes(file.bytes);
+  const documentId = crypto.randomUUID();
+  const storagePath = evidenceStoragePath(t, f, documentId, file.filename);
+  const up = await caller.db.storage.from(PRIVATE_BUCKET).upload(storagePath, file.bytes, { contentType: check.mime, upsert: false });
+  if (up.error) {
+    console.error("[mrv] evidence storage upload failed", { message: up.error.message });
+    throw new HttpError(403, "The document could not be stored; nothing was saved");
+  }
+  const body = evidenceDocumentBody({
+    ...meta,
+    documentId,
+    filename: file.filename,
+    mime: check.mime,
+    sizeBytes: file.bytes.byteLength,
+    sha256: sha,
+    storagePath,
+    replaces: file.replace ?? null,
+  });
+  try {
+    const id = await executorRpc<string>(caller, "mrv_store_evidence_document", "evidence", t, f, body);
+    return { documentId: id };
+  } catch (e) {
+    // Failed-upload cleanup: never leave an orphaned file behind when the metadata write is rejected.
+    const rm = await caller.db.storage.from(PRIVATE_BUCKET).remove([storagePath]);
+    if (rm.error) console.error("[mrv] evidence cleanup after a failed metadata write failed", { message: rm.error.message });
+    throw e;
+  }
+}
+
+/** Short-lived (60 s) signed URL for preview/download; the bucket itself stays private. */
+export async function evidenceDocumentUrl(caller: MrvCaller, t: string, f: string, id: string): Promise<{ url: string; expiresAt: string }> {
+  await requireFacility(caller, t, f, "facility.read");
+  if (!isUuid(id)) throw notFound();
+  const { data, error } = await caller.db
+    .from("evidence_document")
+    .select("storage_path")
+    .eq("tenant_id", t)
+    .eq("facility_id", f)
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw dbFail(error);
+  if (!data) throw notFound();
+  const signed = await caller.db.storage.from(PRIVATE_BUCKET).createSignedUrl(data.storage_path as string, 60);
+  if (signed.error || !signed.data?.signedUrl) {
+    console.error("[mrv] signed url creation failed", { message: signed.error?.message ?? "no url" });
+    throw new HttpError(503, "A download link could not be created; try again");
+  }
+  return { url: signed.data.signedUrl, expiresAt: new Date(Date.now() + 55_000).toISOString() };
 }

@@ -11,6 +11,7 @@ import { rebuildInput, toConfigDrafts, toReadingDrafts, type ReadingSection, typ
 import { computeCoverage, requiredSectionsFor, selectForRange } from "@/lib/mrv/rangeSelection";
 import { checkRunIntegrity, ENGINE_VERSION, inputSha, resultsFingerprint, resultsOf, restoreStore, scopeInputToRange } from "@/lib/mrv/snapshot";
 import { granularityOf, MAPPING_VERSION, parseMapping, serializeMapping, type ImportMapping } from "@/lib/mrv/importMapping";
+import { EVIDENCE_MAX_BYTES, evidenceDocumentBody, evidenceStoragePath, sanitizeEvidenceFilename, validateEvidenceFile, validateEvidenceMeta } from "@/lib/mrv/evidenceFiles";
 import { deriveIntervals } from "@/lib/mrv/cumulative";
 import { planRun, selectConfig, type ConfigDoc } from "@/lib/mrv/executorPayload";
 import { sha256Json } from "@/lib/mrv/sha";
@@ -566,6 +567,94 @@ export const MRV_CASES: MrvCase[] = [
       altered.results.calcRows[0].Value = 1;
       eq(checkRunIntegrity(altered).stored, "altered", "altered stored result detected by its finalization hash");
       eq(inputSha(store.inputs), inputSha(JSON.parse(JSON.stringify(store.inputs))), "input hash stable through JSON round-trip");
+    },
+  },
+  {
+    id: "EF-01",
+    name: "Evidence documents: every accepted file type validates with its canonical MIME type",
+    run: () => {
+      const pdf = validateEvidenceFile("invoice.pdf", new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, ...new Array(24).fill(0x41)]));
+      ok(!("error" in pdf) && pdf.mime === "application/pdf", "PDF accepted");
+      const xlsx = validateEvidenceFile("meter.xlsx", new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, ...new Array(24).fill(0x00)]));
+      ok(!("error" in xlsx) && xlsx.mime === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "XLSX accepted");
+      const xlsm = validateEvidenceFile("meter.xlsm", new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]));
+      ok(!("error" in xlsm), "XLSM accepted");
+      const csv = validateEvidenceFile("export.csv", new TextEncoder().encode("Date,Value\n2025-01-01,12.5\n"));
+      ok(!("error" in csv) && csv.mime === "text/csv", "CSV accepted");
+      const png = validateEvidenceFile("photo.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]));
+      ok(!("error" in png) && png.mime === "image/png", "PNG accepted");
+      const jpg = validateEvidenceFile("photo.jpg", new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]));
+      ok(!("error" in jpg) && jpg.mime === "image/jpeg", "JPG accepted");
+      const jpeg = validateEvidenceFile("photo.jpeg", new Uint8Array([0xff, 0xd8, 0xff, 0xe1]));
+      ok(!("error" in jpeg), "JPEG accepted");
+    },
+  },
+  {
+    id: "EF-02",
+    name: "Evidence documents: unsupported extensions, empty and oversized files are rejected",
+    run: () => {
+      ok("error" in validateEvidenceFile("notes.txt", new TextEncoder().encode("hello")), "TXT rejected");
+      ok("error" in validateEvidenceFile("payload.exe", new Uint8Array([0x4d, 0x5a, 0x00])), "EXE rejected");
+      ok("error" in validateEvidenceFile("archive.zip", new Uint8Array([0x50, 0x4b, 0x03, 0x04])), "ZIP rejected even though XLSX shares its signature");
+      ok("error" in validateEvidenceFile("noextension", new Uint8Array([1, 2])), "missing extension rejected");
+      ok("error" in validateEvidenceFile("invoice.pdf", new Uint8Array(0)), "empty file rejected");
+      ok("error" in validateEvidenceFile("invoice.pdf", new Uint8Array(EVIDENCE_MAX_BYTES + 1)), "file above the 10 MB ceiling rejected");
+    },
+  },
+  {
+    id: "EF-03",
+    name: "Evidence documents: renamed content is rejected (extension must match magic bytes)",
+    run: () => {
+      const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
+      ok("error" in validateEvidenceFile("invoice.pdf", pngBytes), "PNG bytes named .pdf rejected");
+      ok("error" in validateEvidenceFile("export.csv", new Uint8Array([0x25, 0x50, 0x44, 0x46])), "PDF bytes named .csv rejected");
+      ok("error" in validateEvidenceFile("export.csv", new Uint8Array([0x68, 0x69, 0x00, 0x21])), "CSV with NUL bytes rejected");
+      ok("error" in validateEvidenceFile("meter.xlsx", new Uint8Array([0xff, 0xd8, 0xff, 0xe0])), "JPEG bytes named .xlsx rejected");
+    },
+  },
+  {
+    id: "EF-04",
+    name: "Evidence documents: register association validates category and date coverage",
+    run: () => {
+      const a = validateEvidenceMeta({ evidenceId: "  INV-2025-01  ", category: "electricity", start: "2025-01-01", end: "2025-01-31" });
+      ok(!("error" in a) && a.evidenceId === "INV-2025-01" && a.category === "electricity" && a.coverageStart === "2025-01-01" && a.coverageEnd === "2025-01-31", "normalized association");
+      const b = validateEvidenceMeta({ evidenceId: "INV-2025-01" });
+      ok(!("error" in b) && b.category === null && b.coverageStart === null && b.coverageEnd === null, "category and coverage optional together");
+      const one = validateEvidenceMeta({ evidenceId: "INV-1", start: "2025-01-01" });
+      ok(!("error" in one) && one.coverageStart === one.coverageEnd, "a single coverage date covers one day");
+      ok("error" in validateEvidenceMeta({ evidenceId: "  " }), "empty evidence id rejected");
+      ok("error" in validateEvidenceMeta({ evidenceId: "x".repeat(121) }), "oversized evidence id rejected");
+      ok("error" in validateEvidenceMeta({ evidenceId: "INV-1", category: "steam" }), "unknown category rejected");
+      ok("error" in validateEvidenceMeta({ evidenceId: "INV-1", start: "2025-01-31", end: "2025-01-01" }), "reversed coverage rejected");
+      ok("error" in validateEvidenceMeta({ evidenceId: "INV-1", start: "31/1/2025" }), "ambiguous date rejected");
+    },
+  },
+  {
+    id: "EF-05",
+    name: "Evidence documents: storage paths stay inside the authorized facility folder and bodies are canonical",
+    run: () => {
+      const t = "11111111-1111-4111-8111-111111111111";
+      const f = "22222222-2222-4222-8222-222222222222";
+      const id = "33333333-3333-4333-8333-333333333333";
+      eq(evidenceStoragePath(t, f, id, "Invoice 2025.pdf"), `${t}/${f}/evidence/${id}/Invoice 2025.pdf`, "scoped path");
+      eq(evidenceStoragePath(t, f, id, "..\\..\\evil.pdf"), `${t}/${f}/evidence/${id}/__evil.pdf`, "path parts sanitized");
+      eq(sanitizeEvidenceFilename("a/b\\c:d.pdf"), "a_b_c_d.pdf", "unsafe characters replaced");
+      eq(sanitizeEvidenceFilename(""), "document.bin", "empty name fallback");
+      const body = evidenceDocumentBody({
+        evidenceId: "INV-1", category: null, coverageStart: null, coverageEnd: null,
+        documentId: id, filename: "Invoice 2025.pdf", mime: "application/pdf", sizeBytes: 1234, sha256: "ab".repeat(32),
+        storagePath: `${t}/${f}/evidence/${id}/Invoice 2025.pdf`, replaces: null,
+      });
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      eq(parsed.id, id, "body id");
+      eq(parsed.storage_path, `${t}/${f}/evidence/${id}/Invoice 2025.pdf`, "body path");
+      eq(parsed.filename, "Invoice 2025.pdf", "body filename");
+      eq(parsed.replaces, null, "body replaces");
+      eq(body, evidenceDocumentBody({
+        evidenceId: "INV-1", category: null, coverageStart: null, coverageEnd: null,
+        documentId: id, filename: "Invoice 2025.pdf", mime: "application/pdf", sizeBytes: 1234, sha256: "ab".repeat(32),
+        storagePath: `${t}/${f}/evidence/${id}/Invoice 2025.pdf`, replaces: null,
+      }), "body serialization is deterministic (the executor signature binds its exact bytes)");
     },
   },
 ];
