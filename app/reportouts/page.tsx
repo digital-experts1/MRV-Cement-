@@ -11,7 +11,13 @@ function groupReports(rows: SheetRow[]): [string, SheetRow[]][] {
   const groups: Record<string, SheetRow[]> = {};
   const order: string[] = [];
   for (const r of rows) {
-    const ui = String(r["Mapped to Cement UI"] || "Other");
+    const field = String(r["Output Field"] ?? "");
+    const fallback = /quarter|period|product|installation|country/i.test(field) ? "Reporting context"
+      : /evidence|QA|status/i.test(field) ? "Quality and evidence"
+      : /CO2|emission|SEE/i.test(field) ? "Emissions"
+      : /energy|heat|electricity|thermal|fuel/i.test(field) ? "Energy"
+      : /clinker|cement|production/i.test(field) ? "Production" : "Additional outputs";
+    const ui = String(r["Mapped to Cement UI"] || fallback);
     const key = ui.split("/")[0]?.trim() || "Other";
     if (!groups[key]) {
       groups[key] = [];

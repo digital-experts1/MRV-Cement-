@@ -8,7 +8,7 @@ import { EvidenceLink } from "@/components/ui/EvidenceLink";
 import { Fmt } from "@/components/ui/Fmt";
 import { PageHeader, SectionHeader } from "@/components/ui/PageHeader";
 import { RequireWorkbook } from "@/components/ui/RequireWorkbook";
-import { fmtDate } from "@/lib/formatter";
+import { fmtDateFull } from "@/lib/formatter";
 import type { Store } from "@/lib/types";
 
 function n(v: unknown): number {
@@ -18,7 +18,7 @@ function n(v: unknown): number {
 
 function RawMaterialContent({ s }: { s: Store }) {
   const rows = s.rawMaterial;
-  const dates = rows.map((r) => fmtDate(r.Date));
+  const dates = rows.map((r) => fmtDateFull(r.Date));
 
   return (
     <>
@@ -29,6 +29,7 @@ function RawMaterialContent({ s }: { s: Store }) {
         actions={<Chip status={`${rows.length} records`} />}
       />
 
+      {rows.length === 0 ? <div className="section-card mb-lg"><div className="section-card-body"><h3>No raw material readings for this period</h3><p>Method A requires carbonate quantities and laboratory assays. A clinker-output Method B calculation can exist without these readings; missing Method A inputs are not zero consumption.</p><p>Selected method: {String(s.setup["Selected calcination method"] ?? "Not configured")}</p><a href="/dataentry" className="btn btn-secondary">Review inputs</a></div></div> : <>
       <div className="grid-2 mb-lg">
         <div className="chart-card">
           <div className="chart-card-header">
@@ -63,7 +64,7 @@ function RawMaterialContent({ s }: { s: Store }) {
       </div>
 
       <div className="section-card">
-        <SectionHeader icon="file-text" title="Monthly Raw Material Data" />
+        <SectionHeader icon="file-text" title="Raw Material Readings" />
         <div className="section-card-body no-pad">
           <div className="table-wrapper" style={{ border: "none" }}>
             <table className="data-table">
@@ -85,8 +86,8 @@ function RawMaterialContent({ s }: { s: Store }) {
               </thead>
               <tbody>
                 {rows.map((r, i) => (
-                  <tr key={`${fmtDate(r.Date)}-${String(r.Material)}-${i}`}>
-                    <td>{fmtDate(r.Date)}</td>
+                  <tr key={`${fmtDateFull(r.Date)}-${String(r.Material)}-${i}`}>
+                    <td>{fmtDateFull(r.Date)}</td>
                     <td>{String(r.Material || "—")}</td>
                     <td className="num">
                       <Fmt value={r["Quantity t"]} unit="t" />
@@ -125,6 +126,7 @@ function RawMaterialContent({ s }: { s: Store }) {
           </div>
         </div>
       </div>
+      </>}
     </>
   );
 }

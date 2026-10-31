@@ -172,7 +172,7 @@ export function BarChart({
           x: {
             stacked,
             grid: { color: CHART_DEFAULTS.gridColor },
-            ticks: { color: CHART_DEFAULTS.color, font: CHART_DEFAULTS.font, stepSize: horizontal ? 1 : undefined },
+            ticks: { color: CHART_DEFAULTS.color, font: CHART_DEFAULTS.font, maxTicksLimit: horizontal ? 8 : undefined },
           },
           y: {
             stacked,

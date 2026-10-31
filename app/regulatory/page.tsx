@@ -69,6 +69,7 @@ function RegulatoryContent({ s }: { s: Store }) {
         <div>Reference only — official standard texts are not reproduced. Always verify against the most current version of each regulation or standard.</div>
       </div>
 
+      {refs.length === 0 && <div className="section-card mb-lg"><div className="section-card-body"><h3>No references supplied for this dataset</h3><p>Daily activity imports do not provide regulatory references. Include the applicable source, version, section and review date in the MRV workbook before relying on a reporting methodology.</p><a className="btn btn-secondary" href="/setup">Review reporting setup</a></div></div>}
       {official.length > 0 ? (
         <div style={{ marginBottom: "var(--sp-md)" }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: ".09em", marginBottom: "var(--sp-md)" }}>

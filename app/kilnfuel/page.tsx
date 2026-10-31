@@ -8,7 +8,7 @@ import { EvidenceLink } from "@/components/ui/EvidenceLink";
 import { Fmt } from "@/components/ui/Fmt";
 import { PageHeader, SectionHeader } from "@/components/ui/PageHeader";
 import { RequireWorkbook } from "@/components/ui/RequireWorkbook";
-import { fmtDate, fmtDec, fmtInt } from "@/lib/formatter";
+import { fmtDateFull, fmtDec, fmtInt } from "@/lib/formatter";
 import type { Store } from "@/lib/types";
 
 function n(v: unknown): number {
@@ -100,8 +100,8 @@ function KilnFuelContent({ s }: { s: Store }) {
               </thead>
               <tbody>
                 {rows.map((r, i) => (
-                  <tr key={`${fmtDate(r.Date)}-${String(r["Fuel Type"])}-${i}`}>
-                    <td>{fmtDate(r.Date)}</td>
+                  <tr key={`${fmtDateFull(r.Date)}-${String(r["Fuel Type"])}-${i}`}>
+                    <td>{fmtDateFull(r.Date)}</td>
                     <td>
                       <strong>{String(r["Fuel Type"] || "—")}</strong>
                     </td>

@@ -8,7 +8,7 @@ import { EvidenceLink } from "@/components/ui/EvidenceLink";
 import { Fmt } from "@/components/ui/Fmt";
 import { PageHeader, SectionHeader } from "@/components/ui/PageHeader";
 import { RequireWorkbook } from "@/components/ui/RequireWorkbook";
-import { fmtDate } from "@/lib/formatter";
+import { fmtDateFull } from "@/lib/formatter";
 import type { Store } from "@/lib/types";
 
 function n(v: unknown): number {
@@ -18,15 +18,15 @@ function n(v: unknown): number {
 
 function ProductionContent({ s }: { s: Store }) {
   const rows = s.production;
-  const dates = rows.map((r) => fmtDate(r.Date));
+  const dates = rows.map((r) => fmtDateFull(r.Date));
 
   return (
     <>
       <PageHeader
         icon="factory"
         title="Production Input"
-        desc="Monthly kiln clinker output, finished cement production, clinker-to-cement ratios, and additive mass balances."
-        actions={<Chip status={`${rows.length} reporting months`} />}
+        desc="Kiln clinker output, finished cement production, clinker-to-cement ratios, and additive mass balances."
+        actions={<Chip status={`${rows.length} records`} />}
       />
 
       <div className="grid-2 mb-lg">
@@ -62,7 +62,7 @@ function ProductionContent({ s }: { s: Store }) {
       </div>
 
       <div className="section-card">
-        <SectionHeader icon="file-text" title="Monthly Production Register" />
+        <SectionHeader icon="file-text" title="Production Readings" />
         <div className="section-card-body no-pad">
           <div className="table-wrapper" style={{ border: "none" }}>
             <table className="data-table">
@@ -86,8 +86,8 @@ function ProductionContent({ s }: { s: Store }) {
               </thead>
               <tbody>
                 {rows.map((r, i) => (
-                  <tr key={`${fmtDate(r.Date)}-${String(r["Kiln Line"])}-${i}`}>
-                    <td>{fmtDate(r.Date)}</td>
+                  <tr key={`${fmtDateFull(r.Date)}-${String(r["Kiln Line"])}-${i}`}>
+                    <td>{fmtDateFull(r.Date)}</td>
                     <td>{String(r.Quarter || "—")}</td>
                     <td>{String(r["Kiln Line"] || "—")}</td>
                     <td style={{ fontSize: 12 }}>{String(r["Cement Type"] || "—")}</td>
