@@ -20,15 +20,14 @@ export function Sidebar() {
   return (
     <aside id="sidebar" role="navigation" aria-label="Main navigation">
       <div className="sidebar-header">
-        <div className="sidebar-logo">
-          <div className="logo-icon" aria-hidden="true">
-            <Icon name="factory" size={20} />
-          </div>
-          <div className="logo-text">
-            <div className="brand">TRACE FORCE</div>
-            <div className="sub">MRV · Cement QA/QC</div>
-          </div>
-        </div>
+        <Link href="/overview" className="egytrace-sidebar-brand" aria-label="EgyTrace Systems — Overview">
+          <svg className="egytrace-logo-full" viewBox="240 304 1000 360" role="img" aria-label="EgyTrace Systems — Measure, Report, Verify">
+            <image href="/images/egytrace-logo-white.png" width="1536" height="1024" />
+          </svg>
+          <svg className="egytrace-logo-compact" viewBox="240 304 320 360" role="img" aria-label="EgyTrace Systems">
+            <image href="/images/egytrace-logo-white.png" width="1536" height="1024" />
+          </svg>
+        </Link>
         <button className="sidebar-toggle" onClick={toggleSidebar} title="Collapse sidebar" aria-label="Toggle sidebar" type="button">
           <Icon name="chevron-left" size={14} />
         </button>

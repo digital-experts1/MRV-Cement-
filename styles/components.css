@@ -1387,3 +1387,14 @@
 .dcs-calendar button[aria-pressed=true] { outline:2px solid #155bd4; outline-offset:-2px; }
 @media(max-width:900px){.dcs-form-grid,.dcs-cbam-grid,.dcs-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }}
 @media(max-width:560px){.dcs-form-grid,.dcs-cbam-grid,.dcs-summary { grid-template-columns:1fr; }.dcs-workbench,.dcs-review { padding:16px; }}
+
+/* Original EgyTrace artwork: viewports omit the supplied image's outer whitespace. */
+#sidebar .sidebar-header { min-height: 88px; gap: 10px; }
+.egytrace-sidebar-brand { display:block; flex:1; min-width:0; color:#fff; }
+.egytrace-logo-full { display:block; width:100%; height:auto; max-height:66px; }
+.egytrace-logo-compact { display:none; }
+.egytrace-sidebar-brand:focus-visible { outline:2px solid #fff; outline-offset:4px; border-radius:3px; }
+#app-shell.collapsed #sidebar .sidebar-header { padding:10px 8px; flex-direction:column; justify-content:center; gap:6px; min-height:88px; height:auto; }
+#app-shell.collapsed .egytrace-sidebar-brand { flex:none; width:32px; }
+#app-shell.collapsed .egytrace-logo-full { display:none; }
+#app-shell.collapsed .egytrace-logo-compact { display:block; width:32px; height:36px; }
