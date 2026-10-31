@@ -10,7 +10,7 @@ import { importFailureFrom, rejectedImport, scopeChangedDuringImport, type Impor
 import { downloadDailyTemplate, parseDailyTotals, type DailyImport } from "@/lib/mrv/dailyTotals";
 import { MappingSelect } from "./MappingSelect";
 
-const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
 const SUPPORTED = /\.(xlsx|xlsm|json)$/i;
 
 export function UploadPrompt() {
@@ -130,7 +130,7 @@ export function UploadPrompt() {
     >
       <div
         ref={dialogRef}
-        className="upload-card"
+        className="upload-card upload-card-compact"
         role="dialog"
         aria-modal="true"
         aria-labelledby="upload-dialog-title"
@@ -141,23 +141,11 @@ export function UploadPrompt() {
           <Icon name="x" size={18} />
         </button>
 
-        <div className="uc-logo-mark" aria-hidden="true">
-          <Icon name="upload" size={30} />
-        </div>
-        <h2 id="upload-dialog-title">Upload Readings File</h2>
+        <h2 id="upload-dialog-title">Upload readings</h2>
         <div id="upload-dialog-desc">
-          <p>
-            Upload an MRV workbook/data export, or convert daily production, fuel and electricity totals from Excel or CSV.
-            Readings are validated, stored and used to calculate your selected reporting period.
-          </p>
-          <p className="upload-note">
-            Daily totals mode accepts the documented columns and recognised aliases. Rates, cumulative counters and unknown tag layouts require a separate mapping; they are not interpreted as daily totals.
-          </p>
+          <p>Choose your format, then upload a file.</p>
           {ready ? (
-            <p className="upload-note">
-              Target: <strong>{scope.facility?.code} · {scope.facility?.name}</strong>. Readings are stored as history (re-imports never duplicate;
-              changed values become new revisions) and the original file is kept privately.
-            </p>
+            <p className="upload-target">Factory: <strong>{scope.facility?.code} · {scope.facility?.name}</strong></p>
           ) : (
             <div className="dataset-banner dataset-banner-warn">
               {scope.status === "signed-out" ? (
@@ -184,7 +172,7 @@ export function UploadPrompt() {
           </select>
         </label> : null}
         {ready && !daily ? <MappingSelect id="upload-mapping" value={mapping} onChange={setMapping} /> : null}
-        {daily ? <p className="upload-note">Each Date is a complete day in {scope.facility?.timezone || "the factory timezone"}. Electricity in kWh is converted to MWh. Missing factors remain flagged. Activity-only uploads preserve existing setup and constants.</p> : null}
+        
         {preview && daily ? <div className="daily-import-preview" role="status">
           <strong>{preview.file.name}</strong>
           <p>{preview.result.start} – {preview.result.end}: {Object.entries(preview.result.counts).map(([s,n]) => `${n} ${s.toLowerCase()} readings`).join(", ")}</p>
@@ -197,7 +185,7 @@ export function UploadPrompt() {
             ref={chooseRef}
             type="button"
             className="btn btn-primary"
-            style={{ fontSize: 13, padding: "10px 24px" }}
+            style={{ fontSize: 14, padding: "12px 24px", width: "100%", minHeight: 48 }}
             onClick={() => inputRef.current?.click()}
             disabled={loading || busy || !ready || !scope.canImport}
           >
@@ -207,7 +195,7 @@ export function UploadPrompt() {
               </>
             ) : (
               <>
-                <Icon name="upload" size={16} /> {daily ? "Choose daily totals (.xlsx, .csv)" : "Choose file (.xlsx, .xlsm, .json)"}
+                <Icon name="upload" size={16} /> Choose file
               </>
             )}
           </button>
@@ -228,7 +216,7 @@ export function UploadPrompt() {
         </div>
 
         <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginBottom: 14 }} aria-live="polite">
-          {loading || busy ? "Uploading, validating, storing readings and calculating on the server…" : "or drag & drop the workbook onto this dialog"}
+          {loading || busy ? "Uploading, validating, storing readings and calculating on the server…" : (daily ? "Excel or CSV · Drag & drop also supported" : "Excel or JSON · Drag & drop also supported")}
         </div>
 
         {failure?.kind === "scope" ? (
@@ -255,44 +243,24 @@ export function UploadPrompt() {
             <Icon name="edit-3" size={12} /> Fill online
           </Link>
           <span aria-hidden="true" style={{ color: "var(--border-strong)" }}>•</span>
-          {ready && isSynthetic ? (
-            <>
-              <button type="button" className="upload-link" onClick={() => void loadSample()} disabled={loading || busy || !scope.canImport}>
-                <Icon name="play" size={11} /> Load synthetic demo data
-              </button>
-              <span aria-hidden="true" style={{ color: "var(--border-strong)" }}>•</span>
-            </>
-          ) : null}
           <button type="button" className="upload-link" onClick={daily ? downloadDailyTemplate : downloadBlankTemplate}>
             <Icon name="download" size={11} /> {daily ? "Daily totals template" : "Blank template"}
           </button>
         </div>
 
-        <div className="uc-steps" aria-hidden="true">
-          <div className="uc-step">
-            <span className="uc-step-num">1</span>
-            <span>Upload workbook</span>
-          </div>
-          <div className="uc-step-arrow">
-            <Icon name="chevron-right" size={13} />
-          </div>
-          <div className="uc-step">
-            <span className="uc-step-num">2</span>
-            <span>Auto-parse &amp; validate</span>
-          </div>
-          <div className="uc-step-arrow">
-            <Icon name="chevron-right" size={13} />
-          </div>
-          <div className="uc-step">
-            <span className="uc-step-num">3</span>
-            <span>Explore dashboard</span>
-          </div>
-        </div>
+        <details className="upload-help">
+          <summary>File requirements &amp; import details</summary>
+          <p className="upload-note">{daily
+            ? "Use Production, Fuel and Electricity sheets, with optional Setup, Constants and Readme sheets. Use the template for column names."
+            : "Use the TRACE FORCE MRV collection workbook or a JSON data export. Presentation report exports cannot be imported."}</p>
+          <p className="upload-note">Daily totals must cover complete days in {scope.facility?.timezone || "the factory timezone"}. Rates, cumulative counters and unknown SCADA tags need mapping first. Electricity in kWh is converted to MWh.</p>
+          <p className="upload-note">Files are private. Re-imports do not duplicate readings; changed values create revisions. Activity-only uploads preserve setup and constants. Missing factors remain flagged.</p>
+          {ready && isSynthetic ? <button type="button" className="upload-link" onClick={() => void loadSample()} disabled={loading || busy || !scope.canImport}>
+            <Icon name="play" size={12} /> Load synthetic demo data
+          </button> : null}
+        </details>
 
         <div className="upload-footer">
-          <div style={{ fontSize: 11, color: "var(--text-muted)", textAlign: "left" }}>
-            Supports: <strong style={{ color: "var(--text-secondary)" }}>{daily ? "Production, Fuel and Electricity daily totals" : "TRACE_FORCE_MRV_Cement_QAQC_V28_Collection_Workbook"}</strong>
-          </div>
           <button type="button" className="btn btn-secondary btn-sm" onClick={close} disabled={loading || busy}>
             Cancel
           </button>
