@@ -93,10 +93,10 @@ export function LineChart({ labels, datasets, yUnit }: { labels: string[]; datas
         borderColor: color,
         backgroundColor: color + "18",
         borderWidth: 2,
-        pointRadius: 4,
+        pointRadius: labels.length > 60 ? 1 : 3,
         pointHoverRadius: 7,
         pointBackgroundColor: color,
-        tension: 0.3,
+        tension: 0,
         fill: datasets.length === 1,
       };
     });

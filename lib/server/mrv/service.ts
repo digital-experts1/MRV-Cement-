@@ -1,3 +1,4 @@
+import { parseMappedDaily } from "@/lib/mrv/columnMapping";
 /**
  * Supabase-backed MRV services (Directives 04–06). Every call runs with the signed-in user's JWT: reads are filtered by
  * RLS. Imports and calculation runs are produced here (parsing, validation, the authoritative engine) and persisted only
@@ -369,7 +370,11 @@ export async function importFile(caller: MrvCaller, t: string, f: string, file: 
   if (daily && !/\.(csv|xlsx|xlsm)$/i.test(name)) throw badRequest("Daily totals require CSV or Excel");
   if (!daily && !isJson && !/\.(xlsx|xlsm)$/i.test(name)) throw badRequest("Choose an .xlsx/.xlsm workbook or a TRACE FORCE MRV data export (.json)");
   const buf = file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer;
-  const converted = daily ? parseDailyTotals(buf, name) : null;
+  let converted: ReturnType<typeof parseDailyTotals> | null = null;
+  if (daily) {
+    try { converted = file.mapping ? parseMappedDaily(buf, name, file.mapping) : parseDailyTotals(buf, name); }
+    catch (e) { throw badRequest(e instanceof Error ? e.message : "Invalid daily column mapping"); }
+  }
   const candidate = converted ? converted.store : isJson ? parseDataPackage(new TextDecoder().decode(file.bytes), name) : parseWorkbook(buf, name);
   if (converted && ctx.synthetic) { candidate.meta.synthetic = true; candidate.inputs.meta.synthetic = true; }
   const mime = /\.csv$/i.test(name) ? "text/csv" : isJson ? "application/json" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";

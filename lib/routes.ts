@@ -30,7 +30,7 @@ export const ROUTES: Record<RouteKey, RouteDef> = {
   dataentry: { key: "dataentry", href: "/dataentry", label: "Data Entry Studio", icon: "edit-3" },
   governance: { key: "governance", href: "/governance", label: "Governance & Control", icon: "shield" },
   setup: { key: "setup", href: "/setup", label: "Setup & Reporting Period", icon: "settings" },
-  dcs: { key: "dcs", href: "/dcs", label: "DCS / ERP / Lab Boundary", icon: "network" },
+  dcs: { key: "dcs", href: "/dcs", label: "Data Sources & Mapping", icon: "network" },
   production: { key: "production", href: "/production", label: "Production Input", icon: "factory" },
   rawmaterial: { key: "rawmaterial", href: "/rawmaterial", label: "Raw Material Input", icon: "package" },
   kilnfuel: { key: "kilnfuel", href: "/kilnfuel", label: "Kiln Fuel Input", icon: "flame" },

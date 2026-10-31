@@ -25,6 +25,6 @@ export const TOOLTIP_CFG = {
 
 export interface ChartDataset {
   label: string;
-  data: number[];
+  data: (number | null)[];
   color?: string;
 }
