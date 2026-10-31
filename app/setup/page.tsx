@@ -1,79 +1,56 @@
 "use client";
 
-import { Chip } from "@/components/ui/Chip";
+import { useState } from "react";
+import Link from "next/link";
 import { PageHeader, SectionHeader } from "@/components/ui/PageHeader";
 import { RequireWorkbook } from "@/components/ui/RequireWorkbook";
-import type { SheetRow, Store } from "@/lib/types";
-
-const GROUP_ORDER = ["Plant", "EgyTrace", "Production", "Sustainability", "Other"];
-
-function groupSetup(rows: SheetRow[]): [string, SheetRow[]][] {
-  const groups: Record<string, SheetRow[]> = {};
-  for (const r of rows) {
-    const owner = String(r["Governance owner"] || "Other");
-    if (!groups[owner]) groups[owner] = [];
-    groups[owner].push(r);
-  }
-  const ordered = [...GROUP_ORDER.filter((g) => groups[g]), ...Object.keys(groups).filter((g) => !GROUP_ORDER.includes(g))];
-  return ordered.map((k) => [k, groups[k]]);
-}
+import { useScope } from "@/context/ScopeContext";
+import { setupDisplay, setupViewRows } from "@/lib/setupView";
+import type { Store } from "@/lib/types";
 
 function SetupContent({ s }: { s: Store }) {
-  const orderedGroups = groupSetup(s.setupRows);
-
-  return (
-    <>
-      <PageHeader icon="settings" title="Setup & Reporting Period" desc="Facility boundaries, reporting period timeframe, calcination methodology, and governance owners." />
-
-      {orderedGroups.map(([owner, rows]) => (
-        <div className="section-card mb-lg" key={owner}>
-          <SectionHeader icon="sliders" title={`${owner} Parameters`} actions={<Chip status={`${rows.length} items`} />} />
-          <div className="section-card-body no-pad">
-            <table className="gov-table">
-              <thead style={{ borderBottom: "1px solid var(--border)" }}>
-                <tr>
-                  <td className="gov-key" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--text-muted)" }}>
-                    Parameter
-                  </td>
-                  <td className="gov-val" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--text-muted)" }}>
-                    Value
-                  </td>
-                  <td style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--text-muted)" }}>Unit</td>
-                  <td style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--text-muted)" }}>Required</td>
-                  <td className="gov-note" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--text-muted)" }}>
-                    Notes
-                  </td>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={`${String(r.Parameter)}-${i}`}>
-                    <td className="gov-key">{String(r.Parameter || "")}</td>
-                    <td className="gov-val">
-                      <strong>{String(r.Value || "—")}</strong>
-                    </td>
-                    <td style={{ fontSize: 11, color: "var(--text-muted)" }}>{String(r.Unit || "")}</td>
-                    <td>
-                      {r["Required?"] === "Yes" ? (
-                        <span className="badge badge-pass" style={{ fontSize: 10 }}>
-                          Required
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Optional</span>
-                      )}
-                    </td>
-                    <td className="gov-note">{String(r.Notes || "")}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ))}
-    </>
-  );
+  const scope = useScope();
+  const [search, setSearch] = useState("");
+  const rows = setupViewRows(s.setup, s.setupRows);
+  const filtered = rows.filter(row => Object.values(row).some(v => setupDisplay(v).toLowerCase().includes(search.toLowerCase())));
+  const missing = s.completeness.missing.filter(item => item.startsWith("01_Setup:"));
+  const values = [
+    ["Installation", s.setup["Installation / site"]], ["Country", s.setup.Country],
+    ["Primary product", s.setup["Primary product"]], ["Accounting boundary", s.setup["Boundary approach"]],
+    ["Calcination method", s.setup["Selected calcination method"]], ["Factory timezone", scope.facility?.timezone],
+  ];
+  return <>
+    <section className="section-card setup-period" aria-label="Reporting period context">
+      <div><h3>Selected reporting period</h3><p className="setup-dates">{scope.range?.start ?? setupDisplay(s.setup["Period start"])} <span>to</span> {scope.range?.end ?? setupDisplay(s.setup["Period end"])}</p><p>Use Reporting range above to select a month, quarter, year or custom dates. Results use the stored readings for that range.</p></div>
+      <div className="setup-period-actions"><Link className="btn btn-primary" href="/overview">View period results</Link><button className="btn btn-secondary" disabled={!scope.canCalculate || scope.calculating} onClick={scope.recalculate}>{scope.calculating ? "Loading period…" : "Recalculate period"}</button></div>
+    </section>
+    <section className="section-card">
+      <SectionHeader icon="factory" title="Facility & calculation basis" />
+      <dl className="setup-facts">{values.map(([label, value]) => <div key={String(label)}><dt>{String(label)}</dt><dd>{setupDisplay(value)}</dd></div>)}</dl>
+      <p className="setup-context-note">These are the settings used by the displayed calculation{s.meta.run ? `, created ${s.meta.run.created_at}` : ""}. Editing settings uses Data Entry Studio’s existing validation and save workflow.</p>
+    </section>
+    <section className="section-card setup-readiness" aria-label="Setup review">
+      <h3>{missing.length ? `${missing.length} required setup field${missing.length === 1 ? "" : "s"} need attention` : "Required setup checks complete"}</h3>
+      {missing.length ? <ul>{missing.map(item => <li key={item}>{item.replace("01_Setup: ", "")}</li>)}</ul> : <p>This covers required setup fields only. Review QA/QC and evidence separately before using the report.</p>}
+      <div className="setup-links"><Link href="/qaqc">Review QA/QC</Link><Link href="/constants">Emission factors & NCV</Link><Link href="/evidence">Evidence register</Link></div>
+    </section>
+    <section className="section-card">
+      <SectionHeader icon="sliders" title={`All setup parameters (${rows.length})`} />
+      <div className="setup-search"><label htmlFor="setup-search">Find a parameter</label><input id="setup-search" type="search" className="input" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search values, owners or notes" /></div>
+      <div className="setup-table-scroll"><table className="gov-table"><thead><tr><th>Parameter</th><th>Effective value</th><th>Unit</th><th>Requirement</th><th>Owner</th><th>Notes & source</th></tr></thead><tbody>
+        {filtered.map((row, i) => <tr key={`${String(row.Parameter)}-${i}`}><th scope="row">{setupDisplay(row.Parameter)}</th><td>{setupDisplay(row.Value)}</td><td>{row.Unit == null || row.Unit === "" ? "—" : setupDisplay(row.Unit)}</td><td>{row["Required?"] === "Yes" ? "Required" : row["Required?"] === "No" ? "Optional" : "Not declared"}</td><td>{setupDisplay(row["Governance owner"])}</td><td>{row.Notes ? setupDisplay(row.Notes) : "—"}{row._source ? <details><summary>Source details</summary><pre>{JSON.stringify(row._source, null, 2)}</pre></details> : null}</td></tr>)}
+        {!filtered.length && <tr><td colSpan={6}>No parameters match your search.</td></tr>}
+      </tbody></table></div>
+      <p className="setup-context-note">{filtered.length} of {rows.length} parameters shown. Undeclared requirements and owners are not inferred.</p>
+    </section>
+  </>;
 }
 
 export default function SetupPage() {
-  return <RequireWorkbook title="Setup">{(s) => <SetupContent s={s} />}</RequireWorkbook>;
+  const scope = useScope();
+  return <div className="page-container setup-workspace">
+    <PageHeader icon="settings" title="Setup & Reporting Period" desc="Review the facility, accounting boundary and methodology behind your selected results." />
+    <div className="setup-toolbar">{scope.canImport ? <Link className="btn btn-primary" href="/dataentry">Edit setup in Data Entry Studio</Link> : <span>Setup changes require import permission for this factory.</span>}<span>Saved calculations retain their original configuration.</span></div>
+    <RequireWorkbook title="Setup">{s => <SetupContent key={`${scope.activeKey}:${s.meta.revision}`} s={s} />}</RequireWorkbook>
+  </div>;
 }

@@ -420,7 +420,7 @@ export default function DataEntryPage() {
               [
                 { key: "Installation / site", label: "Installation / Site Name", required: true, type: "text", placeholder: "e.g. Plant name" },
                 { key: "Country", label: "Country Jurisdiction", required: true, type: "text" },
-                { key: "Reporting quarter", label: "Reporting Quarter", required: true, options: [["Q1 2025", "Q1 2025 (Jan - Mar)"], ["Q2 2025", "Q2 2025 (Apr - Jun)"], ["Q3 2025", "Q3 2025 (Jul - Sep)"], ["Q4 2025", "Q4 2025 (Oct - Dec)"], ["Annual 2025", "Full Year 2025"]] },
+                { key: "Reporting quarter", label: "Reporting period label", required: true, type: "text", placeholder: "e.g. October 2026, Q4 2026 or Annual 2026" },
                 { key: "Primary product", label: "Primary Cement Product", required: true, options: [["CEM I 42.5R", "CEM I 42.5R (Pure Portland)"], ["CEM II/A-L 42.5N", "CEM II/A-L 42.5N (Portland Limestone)"], ["CEM II/B-L 32.5R", "CEM II/B-L 32.5R (Composite)"], ["CEM III/A 42.5N", "CEM III/A 42.5N (Blast Furnace)"], ["CEM IV/B (P) 32.5N", "CEM IV/B (P) 32.5N (Pozzolanic)"]] },
                 { key: "Period start", label: "Period Start Date", required: true, type: "date" },
                 { key: "Period end", label: "Period End Date", required: true, type: "date" },
