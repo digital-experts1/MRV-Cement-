@@ -255,7 +255,7 @@ async function recordImport(
   ctx: Awaited<ReturnType<typeof requireFacility>>,
   t: string,
   f: string,
-  args: { origin: DataOrigin; candidate: Store; filename: string | null; bytes?: Uint8Array; mime?: string; mapping: ImportMapping | null; configKinds?: string[] }
+  args: { origin: DataOrigin; candidate: Store; filename: string | null; bytes?: Uint8Array; mime?: string; mapping: ImportMapping | null; configKinds?: string[]; declaredPeriod?: { start: string; end: string } }
 ): Promise<ImportOutcomeView> {
   executorKey(); // fail before storing anything when the trusted executor is unavailable
   const { candidate, origin } = args;
@@ -264,8 +264,12 @@ async function recordImport(
   const drafts = candidate._valid ? toReadingDrafts(candidate.inputs, args.mapping, `${origin}:${args.filename ?? "entry"}`) : { readings: [], errors: [] };
   errors = [...errors, ...drafts.errors];
   // Manual saves may carry configuration only (e.g. registering evidence before any reading exists); every
-  // file-based origin still requires readings.
+  // file-based origin still requires readings. Configuration without readings still needs an explicit reporting
+  // period — the database refuses configuration documents without one (no unscoped defaults).
   if (!errors.length && drafts.readings.length === 0 && origin !== "manual") errors.push("The file contains no readings.");
+  if (!errors.length && drafts.readings.length === 0 && origin === "manual" && !args.declaredPeriod) {
+    errors.push("A reporting period is required to save configuration without readings.");
+  }
   if (!errors.length && candidate.meta.synthetic && !ctx.synthetic) {
     errors.push("Synthetic demo data can only be stored in an organization marked as synthetic.");
   }
@@ -295,7 +299,7 @@ async function recordImport(
     }
   }
 
-  const period = candidate._valid ? declaredPeriod(candidate.inputs) : null;
+  const period = args.declaredPeriod ?? (candidate._valid ? declaredPeriod(candidate.inputs) : null);
   const eff = errors.length ? null : effectivePeriod(period, drafts.readings);
   const body = importBody(
     {
@@ -400,15 +404,37 @@ function asInput(value: unknown): MrvInput {
 }
 
 export async function importManual(caller: MrvCaller, t: string, f: string, body: Record<string, unknown>) {
-  if (Object.keys(body).some((k) => k !== "input" && k !== "mapping")) throw badRequest("Unknown field");
+  if (Object.keys(body).some((k) => k !== "input" && k !== "mapping" && k !== "period")) throw badRequest("Unknown field");
   const ctx = await requireFacility(caller, t, f, "upload.create");
   const mapping = mappingArg(body.mapping);
   const input = asInput(body.input);
+  // Explicit reporting period: required for saves that carry no readings (e.g. registering evidence before any
+  // calculation exists). It scopes the stored configuration to that period — nothing is silently "always effective".
+  let period: { start: string; end: string } | undefined;
+  if (body.period !== undefined) {
+    const p = body.period as Record<string, unknown>;
+    if (!p || typeof p !== "object" || Array.isArray(p)) throw badRequest("period must be an object");
+    if (Object.keys(p).some((k) => k !== "start" && k !== "end")) throw badRequest("Unknown period field");
+    const start = toIsoDate(p.start);
+    const end = toIsoDate(p.end);
+    if (!start || !end || end < start) throw badRequest("period must be YYYY-MM-DD dates with end on or after start");
+    period = { start, end };
+  }
   // Rows entered online get manual provenance; edited workbook rows keep their previous provenance chain.
   for (const s of ["production", "rawMaterial", "kilnFuel", "electricity", "inventory"] as const) {
     input[s] = input[s].map((r) => (r._source ? r : { ...r, _source: { origin: "manual" } satisfies RowSource }));
   }
-  return recordImport(caller, ctx, t, f, { origin: "manual", candidate: calculateStore(input, "manual"), filename: "Online entry", mapping });
+  const hasReadings = (["production", "rawMaterial", "kilnFuel", "electricity", "inventory"] as const).some((s) => input[s].length > 0);
+  return recordImport(caller, ctx, t, f, {
+    origin: "manual",
+    candidate: calculateStore(input, "manual"),
+    filename: "Online entry",
+    mapping,
+    // A save without readings stores ONLY the evidence register: an empty setup/constants version must never
+    // become the facility's effective configuration.
+    ...(hasReadings ? {} : { configKinds: ["evidence_register"] }),
+    ...(period ? { declaredPeriod: period } : {}),
+  });
 }
 
 export async function importDemo(caller: MrvCaller, t: string, f: string) {

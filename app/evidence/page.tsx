@@ -65,7 +65,9 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
     setMessage("");
     try {
       const updated = saveEvidenceReference(input, draft, editId, link && hasReadings ? { key: category, start, end } : undefined);
-      const result = await scope.saveManual(updated.input);
+      // Without a stored calculation the save carries no readings, so it must declare the selected reporting
+      // period explicitly — the register is then stored for that period (nothing is invented).
+      const result = await scope.saveManual(updated.input, undefined, s || !scope.range ? undefined : { start: scope.range.start, end: scope.range.end });
       if (!result.accepted) {
         setMessage(result.errors.join(" "));
       } else {

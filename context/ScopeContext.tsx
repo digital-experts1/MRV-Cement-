@@ -73,7 +73,7 @@ interface ScopeValue {
   /** Switch to the full span of stored readings. */
   openReadingsPeriod: () => void;
   importFile: (file: File, mapping?: string | null, format?: "daily-totals") => Promise<ImportOutcome | { accepted: false; errors: string[] }>;
-  saveManual: (input: MrvInput, mapping?: string | null) => Promise<ImportOutcome>;
+  saveManual: (input: MrvInput, mapping?: string | null, period?: { start: string; end: string }) => Promise<ImportOutcome>;
   loadDemo: () => Promise<ImportOutcome>;
   signOut: () => Promise<void>;
   reload: () => void;
@@ -507,9 +507,12 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
   );
 
   const saveManual = useCallback(
-    (input: MrvInput, mapping?: string | null) =>
+    (input: MrvInput, mapping?: string | null, period?: { start: string; end: string }) =>
       withImport(() =>
-        mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility?.id}/manual`, { method: "POST", json: mapping ? { input, mapping } : { input } })
+        mrvFetch<ImportOutcome>(`/orgs/${tenantId}/facilities/${facility?.id}/manual`, {
+          method: "POST",
+          json: { input, ...(mapping ? { mapping } : {}), ...(period ? { period } : {}) },
+        })
       ),
     [tenantId, facility, withImport]
   );

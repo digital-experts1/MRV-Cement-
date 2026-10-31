@@ -637,8 +637,9 @@ export const MRV_CASES: MrvCase[] = [
       const f = "22222222-2222-4222-8222-222222222222";
       const id = "33333333-3333-4333-8333-333333333333";
       eq(evidenceStoragePath(t, f, id, "Invoice 2025.pdf"), `${t}/${f}/evidence/${id}/Invoice 2025.pdf`, "scoped path");
-      eq(evidenceStoragePath(t, f, id, "..\\..\\evil.pdf"), `${t}/${f}/evidence/${id}/__evil.pdf`, "path parts sanitized");
-      eq(sanitizeEvidenceFilename("a/b\\c:d.pdf"), "a_b_c_d.pdf", "unsafe characters replaced");
+      eq(evidenceStoragePath(t, f, id, "..\\..\\evil.pdf"), `${t}/${f}/evidence/${id}/evil.pdf`, "path parts removed entirely (only the final segment is kept)");
+      eq(sanitizeEvidenceFilename("a/b\\c:d.pdf"), "c_d.pdf", "unsafe characters replaced after removing path segments");
+      eq(sanitizeEvidenceFilename(".."), "document.bin", "dot-only names rejected (never a storage path segment)");
       eq(sanitizeEvidenceFilename(""), "document.bin", "empty name fallback");
       const body = evidenceDocumentBody({
         evidenceId: "INV-1", category: null, coverageStart: null, coverageEnd: null,

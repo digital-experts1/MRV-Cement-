@@ -333,11 +333,13 @@ export async function runHostedCases(): Promise<HostedResult> {
     const callerOf = (who: { db: SupabaseClient; uid: string }): MrvCaller => ({ db: who.db, user: { id: who.uid, email: null } });
     const EV_ID = `HOSTED-DOC-${String(Date.now() % 1_000_000).padStart(6, "0")}`;
     const EV_ROW: SheetRow = { "Evidence ID": EV_ID, "Evidence Type": "Invoice", Description: "SYNTHETIC hosted E2E evidence reference (not real evidence)", Owner: "E2E A", Status: "Pending" };
-    // (a) Register a clearly-labelled synthetic reference through the real config-only import path (as saveManual does).
+    // (a) Register a clearly-labelled synthetic reference through the real config-only import path (as saveManual
+    // does when no calculation exists yet: an explicit reporting period scopes the register document).
     const evDrafts = toConfigDrafts({ ...createEmptyInput("manual"), evidence: [EV_ROW] }).filter((d) => d.kind === "evidence_register");
     const evBatch: ImportBatchMeta = {
       id: crypto.randomUUID(), origin: "manual", status: "accepted", filename: "HOSTED_EVIDENCE_REGISTER", sha256: null, size_bytes: null, mime: null, storage_path: null,
-      errors: [], assertions: [], declared_period_start: null, declared_period_end: null, synthetic: true, mapping: null, effective_from: null, effective_to: null, effective_basis: null,
+      errors: [], assertions: [], declared_period_start: "2025-01-01", declared_period_end: "2025-12-31", synthetic: true, mapping: null,
+      effective_from: "2025-01-01", effective_to: "2025-12-31", effective_basis: "declared_period",
     };
     const evRegBody = importBody(evBatch, [], evDrafts);
     const evReg = await rpc(A.db, "mrv_import_v2", t, e1, evRegBody, sign(A.uid, "import", t, e1, evRegBody));
@@ -354,26 +356,37 @@ export async function runHostedCases(): Promise<HostedResult> {
     } catch (e) {
       check("document stored through the real service (private bucket + trusted executor)", false, e instanceof Error ? e.message : String(e));
     }
-    check("document stored through the real service (private bucket + trusted executor)", !!doc1, doc1);
     const docsA = await listEvidenceDocuments(callerOf(A), t, e1);
-    const d1 = docsA.find((d) => d.id === doc1);
+    const d1 = doc1 ? docsA.find((d) => d.id === doc1) : undefined;
     check(
       "document metadata complete (reference, category, coverage, checksum, uploader, current)",
       !!d1 && d1.evidenceId === EV_ID && d1.category === "electricity" && d1.coverageStart === "2025-01-01" && d1.coverageEnd === "2025-01-31"
         && d1.uploadedByMe && d1.isCurrent && d1.sizeBytes === PDF_BYTES.byteLength && d1.sha256 === sha256Bytes(PDF_BYTES),
-      d1 ?? "not found"
+      d1 ?? (doc1 ? "not found" : "skipped: upload failed")
     );
-    const evUrl = await evidenceDocumentUrl(callerOf(A), t, e1, doc1);
-    const evFetched = await fetch(evUrl.url);
-    const evFetchedBytes = new Uint8Array(await evFetched.arrayBuffer());
-    check("short-lived signed URL serves exactly the stored bytes", evFetched.ok && evFetchedBytes.byteLength === PDF_BYTES.byteLength, { status: evFetched.status, bytes: evFetchedBytes.byteLength });
+    let evUrlOk = false;
+    let evUrlDetail: unknown = "";
+    if (doc1) {
+      try {
+        const evUrl = await evidenceDocumentUrl(callerOf(A), t, e1, doc1);
+        const evFetched = await fetch(evUrl.url);
+        const evFetchedBytes = new Uint8Array(await evFetched.arrayBuffer());
+        evUrlOk = evFetched.ok && evFetchedBytes.byteLength === PDF_BYTES.byteLength;
+        evUrlDetail = { status: evFetched.status, bytes: evFetchedBytes.byteLength };
+      } catch (e) {
+        evUrlDetail = e instanceof Error ? e.message : String(e);
+      }
+    }
+    check("short-lived signed URL serves exactly the stored bytes", evUrlOk, evUrlDetail || "skipped: upload failed");
 
     // (c) Authorization and isolation.
     const bDocs = await B.db.from("evidence_document").select("id", { count: "exact", head: true }).eq("tenant_id", t);
     check("B (other organization) reads none of A's evidence documents", (bDocs.count ?? 0) === 0, { n: bDocs.count });
     let bUrlErr = "";
-    try { await evidenceDocumentUrl(callerOf(B), t, e1, doc1); } catch (e) { bUrlErr = e instanceof Error ? e.message : String(e); }
-    check("B is refused a signed URL for A's document", /denied|forbidden|not found|permission/i.test(bUrlErr), bUrlErr);
+    if (doc1) {
+      try { await evidenceDocumentUrl(callerOf(B), t, e1, doc1); } catch (e) { bUrlErr = e instanceof Error ? e.message : String(e); }
+    }
+    check("B is refused a signed URL for A's document", doc1 ? /denied|forbidden|not found|permission/i.test(bUrlErr) : false, bUrlErr || "skipped: upload failed");
     const evDirect = await A.db.from("evidence_document").insert({ tenant_id: t, facility_id: e1, evidence_id: EV_ID, filename: "direct.pdf", mime: "application/pdf", size_bytes: 8, sha256: "0".repeat(64), storage_path: `${t}/${e1}/evidence/${crypto.randomUUID()}/direct.pdf`, uploaded_by: A.uid });
     check("direct PostgREST INSERT of an evidence document is denied", !!evDirect.error, errText(evDirect.error));
 
@@ -412,18 +425,34 @@ export async function runHostedCases(): Promise<HostedResult> {
     check("no metadata row was created by any tampering attempt", (evTamperRows.count ?? 0) === 0, { n: evTamperRows.count });
 
     // (e) Replacement history + failed-upload cleanup.
-    const up2 = await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v2.pdf`, bytes: new Uint8Array([...PDF_BYTES.slice(0, 8), ...new Array(64).fill(0x43)]), evidenceId: EV_ID, category: "electricity", start: "2025-01-01", end: "2025-01-31", replace: doc1 });
-    const docsAfterReplace = await listEvidenceDocuments(callerOf(A), t, e1);
-    const oldDoc = docsAfterReplace.find((d) => d.id === doc1);
-    const newDoc = docsAfterReplace.find((d) => d.id === up2.documentId);
-    check("replacement keeps history: v1 retired and superseded, v2 current", !!oldDoc && !oldDoc.isCurrent && oldDoc.supersededBy === up2.documentId && !!newDoc?.isCurrent, { oldDoc, newDoc });
-    let staleReplaceErr = "";
-    try {
-      await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v3.pdf`, bytes: PDF_BYTES, evidenceId: EV_ID, replace: doc1 });
-    } catch (e) {
-      staleReplaceErr = e instanceof Error ? e.message : String(e);
+    if (doc1) {
+      let up2Id = "";
+      try {
+        const up2 = await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v2.pdf`, bytes: new Uint8Array([...PDF_BYTES.slice(0, 8), ...new Array(64).fill(0x43)]), evidenceId: EV_ID, category: "electricity", start: "2025-01-01", end: "2025-01-31", replace: doc1 });
+        up2Id = up2.documentId;
+      } catch (e) {
+        // Expected to fail until db/supabase/0007_evidence_replacement_order.sql is applied (not applied during syncs).
+        check("replacement keeps history: v1 retired and superseded, v2 current", false, `replacement upload failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (up2Id) {
+        const docsAfterReplace = await listEvidenceDocuments(callerOf(A), t, e1);
+        const oldDoc = docsAfterReplace.find((d) => d.id === doc1);
+        const newDoc = docsAfterReplace.find((d) => d.id === up2Id);
+        check("replacement keeps history: v1 retired and superseded, v2 current", !!oldDoc && !oldDoc.isCurrent && oldDoc.supersededBy === up2Id && !!newDoc?.isCurrent, { oldDoc, newDoc });
+        let staleReplaceErr = "";
+        try {
+          await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v3.pdf`, bytes: PDF_BYTES, evidenceId: EV_ID, replace: doc1 });
+        } catch (e) {
+          staleReplaceErr = e instanceof Error ? e.message : String(e);
+        }
+        check("replacing an already-replaced document is refused", /no longer current/.test(staleReplaceErr), staleReplaceErr);
+      } else {
+        check("replacing an already-replaced document is refused", false, "skipped: replacement upload failed");
+      }
+    } else {
+      check("replacement keeps history: v1 retired and superseded, v2 current", false, "skipped: upload failed");
+      check("replacing an already-replaced document is refused", false, "skipped: upload failed");
     }
-    check("replacing an already-replaced document is refused", /no longer current/.test(staleReplaceErr), staleReplaceErr);
     const evFolders = await A.db.storage.from("mrv-private").list(`${t}/${e1}/evidence`, { limit: 1000 });
     const evStoredIds = new Set(((await A.db.from("evidence_document").select("id").eq("tenant_id", t).eq("facility_id", e1)).data ?? []).map((r) => r.id as string));
     check(
@@ -437,9 +466,15 @@ export async function runHostedCases(): Promise<HostedResult> {
     // (f) Regression: E1's stored runs stay readable history and E2's calculations are untouched by E1 evidence.
     const runAfter = await A.db.from("calculation_run").select("id").eq("id", run.data as string).maybeSingle();
     check("E1's stored Q1 run remains readable after the evidence import", !runAfter.error && !!runAfter.data, errText(runAfter.error));
+    const e2RunsBefore = await runsE2();
     const e2PlanAgain = await plan(A.db, t, e2, q1Spec);
     const e2RunAgain = e2PlanAgain.kind === "run" ? await rpc(A.db, "mrv_finalize_run", t, e2, e2PlanAgain.body, sign(A.uid, "run", t, e2, e2PlanAgain.body)) : null;
-    check("E2 calculations are unaffected by E1's evidence documents (same run reused)", !!e2RunAgain && !e2RunAgain.error && e2RunAgain.data === freshFin?.data, { err: errText(e2RunAgain?.error), same: e2RunAgain?.data === freshFin?.data });
+    const e2RunsAfter = await runsE2();
+    check(
+      "E2 calculations are unaffected by E1's evidence documents (existing run reused, no new run)",
+      !!e2RunAgain && !e2RunAgain.error && e2RunsAfter === e2RunsBefore,
+      { err: errText(e2RunAgain?.error), before: e2RunsBefore, after: e2RunsAfter }
+    );
 
     for (const c of [A, B, C, R]) await c.db.auth.signOut();
   } catch (e) {

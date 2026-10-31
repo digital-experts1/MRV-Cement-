@@ -28,6 +28,16 @@ function OverviewContent({ s }: { s: Store }) {
   const discrepancies = coverage?.reconciliations?.filter((r) => r.status === "discrepancy") ?? [];
   const conflictGroups = Object.entries(Object.groupBy(discrepancies, (r) => r.section));
   const missingGroups = Object.entries(coverage?.missing ?? {}).filter(([, months]) => months.length > 0);
+  const coverageLabel = !coverage ? "Coverage not checked"
+    : discrepancies.length || coverage.conflicts?.length ? "Conflicting readings"
+    : missingGroups.length || coverage.configGaps?.length || coverage.anchorIssues?.length ? "Coverage needs review"
+    : coverage.extendsIntoFuture ? "Includes future dates"
+    : coverage.complete ? "Full period covered" : "Coverage needs review";
+  const coverageMessage = !coverage ? "Recalculate this period to check coverage."
+    : discrepancies.length || coverage.conflicts?.length ? "Overlapping source totals disagree. Review reconciliation details before relying on these results."
+    : missingGroups.length || coverage.configGaps?.length || coverage.anchorIssues?.length ? "Some required dates, configuration or meter boundaries need review. See the details below."
+    : coverage.extendsIntoFuture ? "This period extends beyond today. Future-dated demo readings are synthetic and do not represent observed production."
+    : "Check the period details below. Field completeness and external verification are separate checks.";
   const calcs = s.calculations;
   const dash = s.dashboard;
 
@@ -101,7 +111,7 @@ function OverviewContent({ s }: { s: Store }) {
           </div>
           <div className="overview-period-actions">
             <span className={`badge ${coverage?.complete && !scope.run?.stale ? "badge-pass" : "badge-warn"}`}>
-              {scope.run?.stale ? "Results out of date" : coverage?.complete ? "Full period covered" : "Results need reconciliation"}
+              {scope.run?.stale ? "Results out of date" : coverageLabel}
             </span>
             {scope.canCalculate && <button type="button" className="btn btn-primary btn-sm" disabled={scope.calculating} onClick={scope.recalculate}>
               {scope.calculating ? "Calculating…" : "Recalculate selected period"}
@@ -116,7 +126,7 @@ function OverviewContent({ s }: { s: Store }) {
         </dl>
         {(!coverage?.complete || scope.run?.stale) && <div className="overview-review-note">
           <Icon name="info" size={18} />
-          <div><strong>{scope.run?.stale ? "Readings or factors changed. Recalculate this period." : "Review data quality before using these results."}</strong><p>{scope.run?.stale ? "These are historical results and do not reflect the latest inputs." : "Totals may combine overlapping sources or incomplete coverage. Field completeness does not establish period coverage or verification."}</p></div>
+          <div><strong>{scope.run?.stale ? "Readings or factors changed. Recalculate this period." : "Review data quality before using these results."}</strong><p>{scope.run?.stale ? "These are historical results and do not reflect the latest inputs." : coverageMessage}</p></div>
           <Link className="btn btn-secondary btn-sm" href="/dataentry">Review inputs</Link>
         </div>}
         <details className="overview-issues">

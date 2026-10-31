@@ -27,6 +27,9 @@ Assessment date: Sprint 1 (baseline commit `eba7e43`).
 | 08 | [Data export format](08-data-export-format.md) | Re-importable data package vs presentation reports |
 | 09 | [Directive 02 evidence & handoff](09-directive-02-evidence.md) | Repairs, executed tests, remaining gaps, next package |
 | 10 | [Multi-tenant foundation](10-multi-tenant-foundation.md) | Schema, permission matrix, data paths, executed isolation tests, migration plan |
+| 11 | [Supabase persistence](11-supabase-persistence.md) | Directives 04/05: Auth, schema, RPCs, storage, RLS, testing harnesses |
+| 12 | [Directive 06 / 06B evidence](12-directive-06-evidence.md) | Trusted execution, intervals/units, Q1 2025 demo workbook, signed-in workflow, test record |
+| 13 | [Evidence documents: migrations](13-evidence-documents-migrations.md) | 0006 (applied) / 0007 (pending) contents, application steps, rollback procedures, orphan cleanup |
 
 Documents still to be created in later sprints: domain & unit dictionary (S2), methodology & factor register (S4),
 Q1 reference calculation package (S4), discrepancy investigation register (S4), permissions & workflow matrix (S7),

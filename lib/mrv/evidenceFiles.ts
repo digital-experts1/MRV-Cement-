@@ -32,7 +32,8 @@ export function evidenceExtension(name: string): string | null {
 /** Storage-safe file name: no path parts, no control/unsafe characters, bounded length. */
 export function sanitizeEvidenceFilename(name: string): string {
   const base = name.split(/[\\/]/).pop() ?? "";
-  return base.replace(/[^\w.\- ()]/g, "_").slice(0, 120) || "document.bin";
+  const safe = base.replace(/[^\w.\- ()]/g, "_").slice(0, 120);
+  return safe && !/^\.+$/.test(safe) ? safe : "document.bin";
 }
 
 const startsWith = (b: Uint8Array, sig: number[]) => sig.every((v, i) => b[i] === v);
@@ -55,7 +56,8 @@ export function validateEvidenceFile(name: string, bytes: Uint8Array): EvidenceF
   const isZip = startsWith(bytes, [0x50, 0x4b, 0x03, 0x04]); // PK.. (xlsx/xlsm)
   const isPng = startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const isJpg = startsWith(bytes, [0xff, 0xd8, 0xff]);
-  const isText = !bytes.includes(0); // CSV has no binary signature: reject NUL bytes at least
+  const knownBinary = isPdf || isZip || isPng || isJpg;
+  const isText = !bytes.includes(0) && !knownBinary; // CSV has no signature: reject NUL bytes and known binary headers
   const ok =
     ext === ".pdf" ? isPdf :
     ext === ".xlsx" || ext === ".xlsm" ? isZip :
