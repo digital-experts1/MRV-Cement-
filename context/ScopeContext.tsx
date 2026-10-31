@@ -165,15 +165,34 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
     setError(e instanceof Error ? e.message : String(e));
   }, []);
 
-  /** Opens a range by reading its saved run only. Calculating is a separate, explicit action (recalculate). */
+  /** Load an exact saved result, or calculate it automatically for authorized users with readings. */
   const openRange = useCallback(
-    async (t: string, f: ScopeFacility, spec: RangeSpec, token: number, signal: AbortSignal) => {
+    async (t: string, f: ScopeFacility, spec: RangeSpec, token: number, signal: AbortSignal, hasReadings: boolean) => {
       setActivity("reading");
       setLoading(true);
       try {
         const res = await readStored(t, f.id, spec, signal);
         if (!isCurrent(token)) return;
-        showView(res.view, null, null);
+        if (hasReadings && f.permissions.includes("calculation.run") && (!res.view || res.view.run.stale)) {
+          setActivity("calculating");
+          try {
+            const calculated = await mrvFetch<CalcResponse>(`/orgs/${t}/facilities/${f.id}/runs`, {
+              method: "POST", json: { range: spec }, signal,
+            });
+            if (!isCurrent(token)) return;
+            showView(calculated.view, calculated.coverage, calculated.note);
+          } catch (e) {
+            if (signal.aborted || !isCurrent(token)) return;
+            if (e instanceof ApiError && e.status === 401) throw e;
+            const reason = e instanceof Error ? e.message : String(e);
+            showView(res.view, null, res.view
+              ? `Automatic calculation failed: ${reason} Showing the saved results unchanged.`
+              : `Automatic calculation failed: ${reason}`);
+            setError(reason);
+          }
+        } else {
+          showView(res.view, null, null);
+        }
       } finally {
         if (isCurrent(token)) {
           setActivity(null);
@@ -201,7 +220,7 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
       const spec = preferred ?? defaultRange(s, f.timezone);
       setRangeSpec(spec);
       savePref(t, f.id, spec);
-      await openRange(t, f, spec, token, signal);
+      await openRange(t, f, spec, token, signal, s.currentReadings > 0);
     },
     [openRange]
   );
@@ -312,9 +331,9 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
       setRangeSpec(spec);
       setError(null);
       savePref(tenantId, facility.id, spec);
-      openRange(tenantId, facility, spec, token, signal).catch((e) => handleError(e, token));
+      openRange(tenantId, facility, spec, token, signal, (summary?.currentReadings ?? 0) > 0).catch((e) => handleError(e, token));
     },
-    [tenantId, facility, beginSwitch, openRange, handleError]
+    [tenantId, facility, summary, beginSwitch, openRange, handleError]
   );
 
   const recalculate = useCallback(() => {
