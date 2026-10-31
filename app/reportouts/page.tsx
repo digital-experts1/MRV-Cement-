@@ -12,8 +12,8 @@ function groupReports(rows: SheetRow[]): [string, SheetRow[]][] {
   const order: string[] = [];
   for (const r of rows) {
     const field = String(r["Output Field"] ?? "");
-    const fallback = /quarter|period|product|installation|country/i.test(field) ? "Reporting context"
-      : /evidence|QA|status/i.test(field) ? "Quality and evidence"
+    const fallback = /^(quarter|period start|period end|product|installation|country)$/i.test(field) ? "Reporting context"
+      : /evidence|QA|status|completeness|readiness/i.test(field) ? "Quality and evidence"
       : /CO2|emission|SEE/i.test(field) ? "Emissions"
       : /energy|heat|electricity|thermal|fuel/i.test(field) ? "Energy"
       : /clinker|cement|production/i.test(field) ? "Production" : "Additional outputs";

@@ -39,7 +39,7 @@ function GovernanceContent({ s }: { s: Store }) {
                   <td className="gov-val">
                     <strong>{String(r.Value ?? "")}</strong>
                   </td>
-                  <td className="gov-note">{String(r["Governance note"] || r.Value ?? "")}</td>
+                  <td className="gov-note">{String(r["Governance note"] ?? "")}</td>
                 </tr>
               ))}
             </tbody>
