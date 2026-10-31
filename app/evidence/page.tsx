@@ -1,161 +1,34 @@
 "use client";
-
-import { Suspense, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { MappedBadge } from "@/components/ui/Badge";
-import { PageHeader } from "@/components/ui/PageHeader";
-import { RequireWorkbook } from "@/components/ui/RequireWorkbook";
-import type { SheetRow, Store } from "@/lib/types";
-
-function uniqueField(rows: SheetRow[], key: string): string[] {
-  return [...new Set(rows.map((r) => String(r[key] || "")).filter(Boolean))];
+import { Suspense,useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
+import { PageHeader } from '@/components/ui/PageHeader';
+import { RequireWorkbook } from '@/components/ui/RequireWorkbook';
+import { useScope } from '@/context/ScopeContext';
+import { evidenceCoverage,EVIDENCE_SECTIONS,saveEvidenceReference,safeEvidenceUrl } from '@/lib/evidenceReview';
+import { setupDisplay } from '@/lib/setupView';
+import type { SheetRow,Store } from '@/lib/types';
+const FIELDS=['Evidence ID','Evidence Type','Description','Source System','Owner','Reviewer','Frequency','Document URL','Notes'];
+function EvidenceContent({s}:{s:Store}){
+ const scope=useScope();const params=useSearchParams();const [search,setSearch]=useState(params.get('id')??'');const [status,setStatus]=useState('');
+ const [draft,setDraft]=useState<SheetRow|null>(null);const [editId,setEditId]=useState<string|null>(null);const [link,setLink]=useState(false);const [category,setCategory]=useState<typeof EVIDENCE_SECTIONS[number][1]>('production');
+ const [start,setStart]=useState(String(s.setup['Period start']??''));const [end,setEnd]=useState(String(s.setup['Period end']??''));const [busy,setBusy]=useState(false);const [message,setMessage]=useState('');
+ const coverage=evidenceCoverage(s.inputs);const rows=s.inputs.evidence.filter(r=>(!status||r.Status===status)&&JSON.stringify(r).toLowerCase().includes(search.toLowerCase()));
+ function edit(row?:SheetRow){setDraft(row?{...row}:{'Evidence ID':'','Evidence Type':'',Description:'',Owner:'',Status:'Pending'});setEditId(row?String(row['Evidence ID']):null);setLink(false);setMessage('');}
+ async function save(){if(!draft)return;setBusy(true);setMessage('');try{const updated=saveEvidenceReference(s.inputs,draft,editId,link?{key:category,start,end}:undefined);const result=await scope.saveManual(updated.input);if(!result.accepted)setMessage(result.errors.join(' '));else{setDraft(null);setMessage('Evidence reference saved. Review the updated calculation and linkage checks.');}}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
+ function exportRegister(){const url=URL.createObjectURL(new Blob([JSON.stringify({period:{start:s.setup['Period start'],end:s.setup['Period end']},synthetic:s.meta.synthetic,verification:'Not established by this register',evidence:rows},null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='MRV_Evidence_References.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+ return <div className="page-container dcs-workspace"><PageHeader icon="folder" title="Evidence Register" desc="Manage document references and trace their links to the selected calculation’s readings." />
+ <div className="dcs-intro"><button className="btn btn-primary" disabled={!scope.canImport||busy} onClick={()=>edit()}>Add evidence reference</button><button className="btn btn-secondary" disabled={!rows.length} onClick={exportRegister}>Export filtered register</button><Link href="/qaqc">Review evidence QA/QC</Link></div>
+ <section className="section-card dcs-summary"><div><strong>{s.inputs.evidence.length}</strong><span>Registered references</span></div><div><strong>{coverage.linked.length}</strong><span>Readings linked to mapped references</span></div><div><strong>{coverage.noId.length}</strong><span>Readings without an evidence ID</span></div><div><strong>{coverage.unknown.length}</strong><span>Readings citing an unknown ID</span></div></section>
+ <p>Counts cover production, raw materials, fuel and electricity in the displayed calculation. “Mapped” means linked only. Document contents, reviewer names and URLs do not establish external verification. Document-file upload is not available here yet.</p>
+ {message&&<div className="dcs-message" role="status">{message}</div>}
+ {draft&&<section className="section-card dcs-review"><h2>{editId?'Edit evidence reference':'Add evidence reference'}</h2><fieldset disabled={busy}><div className="dcs-form-grid">{FIELDS.map(field=><label key={field}>{field}<input value={String(draft[field]??'')} readOnly={field==='Evidence ID'&&!!editId} type={field==='Document URL'?'url':'text'} onChange={e=>setDraft({...draft,[field]:e.target.value})}/></label>)}</div>
+ <label className="dcs-filter"><input type="checkbox" checked={link} onChange={e=>setLink(e.target.checked)}/>Link this reference to readings in a coverage period</label>
+ {link&&<><div className="dcs-form-grid"><label>Input category<select value={category} onChange={e=>setCategory(e.target.value as typeof category)}>{EVIDENCE_SECTIONS.map(([label,key])=><option key={key} value={key}>{label}</option>)}</select></label><label>Coverage start<input type="date" value={start} onChange={e=>setStart(e.target.value)}/></label><label>Coverage end<input type="date" value={end} onChange={e=>setEnd(e.target.value)}/></label></div><p>{s.inputs[category].filter(r=>String(r['Interval Start']??'')>=start && String(r['Interval End']??'')<=end && !!r['Interval Start'] && !!r['Interval End'] && (!r['Evidence ID'] || r['Evidence ID']===draft['Evidence ID'])).length} eligible readings. Links only rows wholly inside these dates and leaves links to other evidence unchanged. Confirm the document supports every selected reading; recording a link does not validate its contents.</p></>}
+ <p>Saving creates persisted configuration/reading revisions through the existing import workflow and recalculates the selected inputs.</p><button className="btn btn-primary" disabled={busy||!scope.canImport} onClick={()=>void save()}>{busy?'Saving…':'Save reference & selected links'}</button><button className="btn btn-secondary" onClick={()=>setDraft(null)}>Cancel</button></fieldset></section>}
+ <section className="section-card dcs-review"><h2>Document references</h2><div className="dcs-filter"><label>Search references<input type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="ID, description, owner or source"/></label><label>Linkage status<select value={status} onChange={e=>setStatus(e.target.value)}><option value="">All statuses</option>{[...new Set(s.inputs.evidence.map(r=>String(r.Status??'')))].filter(Boolean).map(v=><option key={v}>{v}</option>)}</select></label><button className="btn btn-secondary" onClick={()=>{setSearch('');setStatus('');}}>Clear filters</button></div>
+ {!rows.length?<div className="dcs-preview"><h3>{s.inputs.evidence.length?'No matching references':'No evidence references registered'}</h3><p>Add actual document references such as electricity invoices, fuel delivery records, laboratory certificates or calibration records. Synthetic demo readings are not documentary evidence.</p></div>:<div className="dcs-scroll"><table className="data-table"><thead><tr><th>Evidence ID</th><th>Type / description</th><th>Source & owner</th><th>Declared status</th><th>Linked readings</th><th>Document / details</th><th>Action</th></tr></thead><tbody>{rows.map((r,i)=>{const id=String(r['Evidence ID']??'');const associated=coverage.readings.filter(x=>x.id===id);const url=safeEvidenceUrl(r['Document URL']);return <tr key={`${id}-${i}`}><th scope="row">{id}</th><td>{setupDisplay(r['Evidence Type'])}<p>{setupDisplay(r.Description)}</p></td><td>{setupDisplay(r['Source System'])}<p>{setupDisplay(r.Owner)}</p></td><td>{setupDisplay(r.Status)}</td><td><details><summary>{associated.length} reading links</summary><pre>{JSON.stringify(associated.map(x=>({category:x.label,row:x.index+1,reading:x.row})),null,2)}</pre></details></td><td>{url&&<a href={url} target="_blank" rel="noreferrer">Open document link</a>}<details><summary>All reference fields</summary><pre>{JSON.stringify(r,null,2)}</pre></details></td><td><button className="btn btn-secondary" disabled={!scope.canImport||busy} onClick={()=>edit(r)}>Edit reference</button></td></tr>;})}</tbody></table></div>}</section>
+ <section className="section-card dcs-review"><h2>Evidence gaps by input</h2><div className="dcs-scroll"><table className="data-table"><thead><tr><th>Input</th><th>Rows</th><th>No ID</th><th>Unknown ID</th><th>Inspect readings</th></tr></thead><tbody>{EVIDENCE_SECTIONS.map(([label,key])=><tr key={key}><th>{label}</th><td>{s.inputs[key].length}</td><td>{coverage.noId.filter(x=>x.key===key).length}</td><td>{coverage.unknown.filter(x=>x.key===key).length}</td><td><Link href="/dcs">Open source readings</Link></td></tr>)}</tbody></table></div><p>Retain the monitoring plan, measurement records, calculation basis and applicable verification report for CBAM evidence handoff. This register does not submit a CBAM declaration.</p></section>
+ </div>;
 }
-
-function EvidenceContent({ s }: { s: Store }) {
-  const searchParams = useSearchParams();
-  const idParam = searchParams.get("id") || "";
-  const rows = s.evidence;
-  const sheets = uniqueField(rows, "Mapped Sheet");
-  const owners = uniqueField(rows, "Owner");
-  const mapped = rows.filter((r) => r.Status === "Mapped").length;
-  const pending = rows.length - mapped;
-
-  const [search, setSearch] = useState(idParam);
-  const [status, setStatus] = useState("");
-  const [sheet, setSheet] = useState("");
-  const [owner, setOwner] = useState("");
-
-  useEffect(() => {
-    if (idParam) setSearch(idParam);
-  }, [idParam]);
-
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-    return rows.filter((r) => {
-      const evId = String(r.evidenceId || r["Evidence ID"] || "");
-      const text = [
-        evId,
-        r["Evidence Type"],
-        r.Description,
-        r["Source System"],
-        r["Mapped Sheet"],
-        r.Status,
-        r.Owner,
-        r.Reviewer,
-        r.Frequency,
-        r.Notes,
-      ]
-        .map((v) => String(v ?? ""))
-        .join(" ")
-        .toLowerCase();
-      return (
-        (!q || text.includes(q) || evId.toLowerCase().includes(q)) &&
-        (!status || String(r.Status || "") === status) &&
-        (!sheet || String(r["Mapped Sheet"] || "") === sheet) &&
-        (!owner || String(r.Owner || "") === owner)
-      );
-    });
-  }, [rows, search, status, sheet, owner]);
-
-  return (
-    <>
-      <PageHeader
-        icon="folder"
-        title="Evidence Register"
-        desc="Comprehensive audit-trail registry linking activity data, lab certificates, invoices, and weighbridge records."
-        actions={
-          <>
-            <span className="badge badge-pass">
-              <span className="qa-dot qa-dot-pass" /> {mapped} Mapped
-            </span>
-            {pending > 0 ? (
-              <span className="badge badge-warn">
-                <span className="qa-dot qa-dot-warn" /> {pending} Pending
-              </span>
-            ) : null}
-          </>
-        }
-      />
-
-      <div className="filter-row mb-md">
-        <input className="filter-input" placeholder="Search by evidence ID, description..." value={search} onChange={(e) => setSearch(e.target.value)} />
-        <select className="filter-select" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="">All Statuses</option>
-          <option value="Mapped">Mapped</option>
-          <option value="Pending">Pending</option>
-        </select>
-        <select className="filter-select" value={sheet} onChange={(e) => setSheet(e.target.value)}>
-          <option value="">All Sheets</option>
-          {sheets.map((sh) => (
-            <option key={sh} value={sh}>
-              {sh}
-            </option>
-          ))}
-        </select>
-        <select className="filter-select" value={owner} onChange={(e) => setOwner(e.target.value)}>
-          <option value="">All Owners</option>
-          {owners.map((o) => (
-            <option key={o} value={o}>
-              {o}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="section-card">
-        <div className="section-card-body no-pad">
-          <div className="table-wrapper" style={{ border: "none" }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Evidence ID</th>
-                  <th>Type</th>
-                  <th>Description</th>
-                  <th>Source System</th>
-                  <th>Mapped Sheet</th>
-                  <th>Status</th>
-                  <th>Owner</th>
-                  <th>Reviewer</th>
-                  <th>Frequency</th>
-                  <th>Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((r, i) => {
-                  const isMapped = r.Status === "Mapped";
-                  const evId = String(r.evidenceId || r["Evidence ID"] || "");
-                  return (
-                    <tr key={`${evId}-${i}`} className={isMapped ? undefined : "pending-row"}>
-                      <td className="mono" style={{ color: "var(--accent-2)", fontWeight: 600 }}>
-                        {evId}
-                      </td>
-                      <td style={{ fontSize: 12 }}>{String(r["Evidence Type"] || "—")}</td>
-                      <td style={{ maxWidth: 220, fontSize: 12 }}>{String(r.Description || "—")}</td>
-                      <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>{String(r["Source System"] || "—")}</td>
-                      <td style={{ fontSize: 12, color: "var(--accent-2)" }}>{String(r["Mapped Sheet"] || "—")}</td>
-                      <td>
-                        <MappedBadge mapped={isMapped} />
-                      </td>
-                      <td style={{ fontSize: 12 }}>{String(r.Owner || "—")}</td>
-                      <td style={{ fontSize: 12 }}>{String(r.Reviewer || "—")}</td>
-                      <td style={{ fontSize: 11, color: "var(--text-muted)" }}>{String(r.Frequency || "—")}</td>
-                      <td style={{ fontSize: 11.5, color: "var(--text-muted)", maxWidth: 180 }}>{String(r.Notes || "—")}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-export default function EvidencePage() {
-  return (
-    <Suspense fallback={null}>
-      <RequireWorkbook title="Evidence Register">{(s) => <EvidenceContent s={s} />}</RequireWorkbook>
-    </Suspense>
-  );
-}
+export default function EvidencePage(){const scope=useScope();return <Suspense fallback={null}><RequireWorkbook title="Evidence Register">{s=><EvidenceContent key={`${scope.activeKey}/${s.meta.revision}/${s.meta.run?.id}`} s={s}/>}</RequireWorkbook></Suspense>;}
