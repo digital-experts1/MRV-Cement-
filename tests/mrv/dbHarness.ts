@@ -31,7 +31,7 @@ create role anon nologin;
 create role authenticated nologin;
 create role service_role nologin bypassrls;
 create schema auth;
-create table auth.users (id uuid primary key, email text);
+create table auth.users (id uuid primary key, email character varying(255));
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 grant usage on schema auth to anon, authenticated, service_role;
 create schema storage;
@@ -733,7 +733,7 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
 
     // (i) Other tenants are untouched by all of the above; every change is in the audit trail.
     await as(USERS.B);
-    const bOwn = Number((await one<{ n: number }>("select count(*)::int from public.tenant where id = $1", [tB])).n);
+    const bOwn = Number((await one<{ n: number }>("select count(*)::int as n from public.tenant where id = $1", [tB])).n);
     await as(USERS.A);
     const audits = (await pg.query<{ action: string }>("select action from public.audit_event where tenant_id = $1 and action like 'access.%' order by action", [tA])).rows.map((r) => r.action);
     check("B's own organization is untouched, and A reads its access audit trail (tenant-level audit.read)",

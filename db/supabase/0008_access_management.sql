@@ -64,7 +64,7 @@ begin
     raise exception 'permission denied' using errcode = '42501';
   end if;
   return query
-    select m.id, m.user_id, u.email, m.status, m.created_at, m.revoked_at,
+    select m.id, m.user_id, u.email::text, m.status, m.created_at, m.revoked_at,
       coalesce((
         select jsonb_agg(jsonb_build_object('role', a.role, 'facility_id', a.facility_id) order by a.role, a.facility_id nulls first)
         from public.role_assignment a

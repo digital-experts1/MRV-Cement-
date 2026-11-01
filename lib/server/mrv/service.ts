@@ -894,6 +894,7 @@ export async function evidenceDocumentUrl(caller: MrvCaller, t: string, f: strin
 // ───────────────────────── Access management (0008) ─────────────────────────
 // Members, invitations and role assignments of the selected tenant. Authorization is decided in the database
 // (members.manage = tenant administrators); the service re-checks visibility so errors are 404/403, never leaks.
+// Endpoints: listMembers, listInvitations, inviteMember, revokeInvitation, setMemberRole, revokeMemberAccess.
 
 interface MemberRole {
   role: string;

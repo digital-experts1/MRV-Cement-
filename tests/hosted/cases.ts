@@ -310,6 +310,49 @@ export async function runHostedCases(): Promise<HostedResult> {
     const rImp = await doImport(R, t, e1);
     check("revoked user R is rejected at execution time despite a valid signature", !!rImp.res.error && /permission denied/.test(errText(rImp.res.error)), errText(rImp.res.error));
 
+    // ── Access management (0008): guarded listing, invitation lifecycle, role grants, last-admin guard, audit ──
+    const eBList = await B.db.rpc("mrv_list_members", { p_tenant: t });
+    check("B (other organization) cannot list A's members through PostgREST (guarded RPC)", !!eBList.error, errText(eBList.error));
+    const eCList = await C.db.rpc("mrv_list_members", { p_tenant: t });
+    check("non-admin member C cannot list members", !!eCList.error, errText(eCList.error));
+    const aListRes = await A.db.rpc("mrv_list_members", { p_tenant: t });
+    const aList = (aListRes.data ?? []) as { membership_id: string; email: string; status: string; roles: { role: string; facility_id: string | null }[] }[];
+    const aMem = aList.find((m) => m.email === env.MRV_E2E_A_EMAIL);
+    const cMem = aList.find((m) => m.email === env.MRV_E2E_C_EMAIL);
+    check("tenant admin A lists members with email, status and the tenant_admin role", !aListRes.error && !!aMem && aMem.roles.some((r) => r.role === "tenant_admin" && r.facility_id === null) && !!cMem, aList.length);
+    const eCInvite = await C.db.rpc("mrv_invite_member", { p_tenant: t, p_email: "nobody@synthetic.test", p_role: "reviewer", p_facility: e1 });
+    const eCRole = await C.db.rpc("mrv_set_member_role", { p_tenant: t, p_membership: aMem!.membership_id, p_role: "reviewer", p_facility: e1, p_grant: true });
+    const eCRevoke = await C.db.rpc("mrv_revoke_member_access", { p_tenant: t, p_membership: aMem!.membership_id, p_reason: "synthetic tampering attempt" });
+    check("non-admin C is denied every management RPC (invite, role grant, member revoke)", !!eCInvite.error && !!eCRole.error && !!eCRevoke.error, { invite: errText(eCInvite.error), role: errText(eCRole.error), revoke: errText(eCRevoke.error) });
+    const eSelfDemote = await A.db.rpc("mrv_set_member_role", { p_tenant: t, p_membership: aMem!.membership_id, p_role: "tenant_admin", p_facility: null, p_grant: false });
+    check("the last active tenant administrator cannot be demoted (live guard)", !!eSelfDemote.error && /last active tenant administrator/.test(errText(eSelfDemote.error)), errText(eSelfDemote.error));
+    const gAud = await A.db.rpc("mrv_set_member_role", { p_tenant: t, p_membership: cMem!.membership_id, p_role: "auditor", p_facility: null, p_grant: true });
+    const cE2Now = await C.db.from("activity_reading").select("id", { count: "exact", head: true }).eq("facility_id", e2);
+    const rAud = await A.db.rpc("mrv_set_member_role", { p_tenant: t, p_membership: cMem!.membership_id, p_role: "auditor", p_facility: null, p_grant: false });
+    const cE2Gone = await C.db.from("activity_reading").select("id", { count: "exact", head: true }).eq("facility_id", e2);
+    check("tenant-wide auditor grant opens E2 to C; revoking it closes E2 again in the same session", !gAud.error && (cE2Now.count ?? 0) > 0 && !rAud.error && (cE2Gone.count ?? 0) === 0, { grant: errText(gAud.error), e2During: cE2Now.count, revoke: errText(rAud.error), e2After: cE2Gone.count });
+    const inv = await A.db.rpc("mrv_invite_member", { p_tenant: t, p_email: env.MRV_E2E_B_EMAIL, p_role: "reviewer", p_facility: e1 });
+    const inviteToken = (inv.data ?? "") as string;
+    check("admin creates an expiring single-use invitation for B (E1-scoped reviewer)", !inv.error && /^[0-9a-f]{64}$/.test(inviteToken), inv.error ? errText(inv.error) : { tokenLen: inviteToken.length });
+    const wrongAcct = await C.db.rpc("mrv_accept_invitation", { p_token: inviteToken });
+    check("the invitation cannot be accepted by the wrong account (bound to the invited email)", !!wrongAcct.error && /different email/.test(errText(wrongAcct.error)), errText(wrongAcct.error));
+    const bAccept = await B.db.rpc("mrv_accept_invitation", { p_token: inviteToken });
+    check("B accepts the invitation and joins A", !bAccept.error && bAccept.data === t, errText(bAccept.error));
+    const bE1 = await B.db.from("activity_reading").select("id", { count: "exact", head: true }).eq("facility_id", e1);
+    const bE2 = await B.db.from("activity_reading").select("id", { count: "exact", head: true }).eq("facility_id", e2);
+    check("invited B (reviewer on E1 only) reads E1 but cannot reach E2", (bE1.count ?? 0) > 0 && (bE2.count ?? 0) === 0, { e1: bE1.count, e2: bE2.count });
+    const reuse = await B.db.rpc("mrv_accept_invitation", { p_token: inviteToken });
+    check("the single-use invitation token cannot be reused", !!reuse.error, errText(reuse.error));
+    const aList2Res = await A.db.rpc("mrv_list_members", { p_tenant: t });
+    const bMem = ((aList2Res.data ?? []) as { membership_id: string; email: string }[]).find((m) => m.email === env.MRV_E2E_B_EMAIL);
+    const revB = await A.db.rpc("mrv_revoke_member_access", { p_tenant: t, p_membership: bMem!.membership_id, p_reason: "hosted E2E synthetic check: removing B again" });
+    const bE1After = await B.db.from("activity_reading").select("id", { count: "exact", head: true }).eq("facility_id", e1);
+    const bOwn = await B.db.from("tenant").select("id", { count: "exact", head: true }).eq("id", tb);
+    check("revoking B's membership ends A-access immediately in the existing session; B's own organization is untouched", !revB.error && (bE1After.count ?? 0) === 0 && (bOwn.count ?? 0) === 1, { revoke: errText(revB.error), e1: bE1After.count, own: bOwn.count });
+    const aud = await A.db.from("audit_event").select("action").eq("tenant_id", t).like("action", "access.%");
+    const audActions = new Set((aud.data ?? []).map((r) => r.action as string));
+    check("every access change is recorded in the audit trail (grant, revoke, invitation create/accept, member revoke)", !aud.error && ["access.role.grant", "access.role.revoke", "access.invitation.create", "access.invitation.accept", "access.member.revoke"].every((a) => audActions.has(a)), [...audActions]);
+
     // ── Private source files ──
     const path = `${t}/${e1}/e2e/${crypto.randomUUID()}.txt`;
     const up = await A.db.storage.from("mrv-private").upload(path, new Blob(["SYNTHETIC E2E source file"], { type: "text/plain" }), { upsert: false });
