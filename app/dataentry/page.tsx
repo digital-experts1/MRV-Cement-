@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { referenceIssues } from "@/lib/mrv/regulatoryReview";
 import { Icon } from "@/components/icons/Icon";
 import { QaDot } from "@/components/ui/Badge";
 import { EntryTable } from "@/components/dataentry/EntryTable";
@@ -25,9 +26,10 @@ type TabKey =
   | "inventory"
   | "constants"
   | "evidence"
+  | "regulatory"
   | "review";
 
-type RowSection = "production" | "rawMaterial" | "kilnFuel" | "electricity" | "inventory" | "evidence" | "constants";
+type RowSection = "production" | "rawMaterial" | "kilnFuel" | "electricity" | "inventory" | "evidence" | "constants" | "regulatory";
 
 function blankForm(): MrvInput {
   return {
@@ -93,7 +95,7 @@ export default function DataEntryPage() {
   useEffect(() => {
     const openSection = () => {
       const section = window.location.hash.slice(1);
-      if (["constants", "kilnfuel", "electricity"].includes(section)) setActiveTab(section as TabKey);
+      if (["constants", "kilnfuel", "electricity", "regulatory"].includes(section)) setActiveTab(section as TabKey);
     };
     openSection();
     window.addEventListener("hashchange", openSection);
@@ -222,6 +224,7 @@ export default function DataEntryPage() {
         kilnFuel: { Date: date, "Fuel Type": "", Quantity: "", Unit: "", "NCV GJ/unit": "", "EF tCO2/TJ": "", "Oxidation Factor": "", "Biomass Fraction": "", "Evidence ID": "" },
         electricity: { Date: date, "Meter / Source": "", "Grid MWh": "", "Grid EF tCO2/MWh": "", "Self-generation MWh": "", "Self-generation EF": "", "Renewable MWh": "", "Evidence ID": "" },
         inventory: { Date: date, Material: "Clinker", "Opening Stock t": "", "Purchased t": "", "Dispatched t": "", "Closing Stock t": "", "Evidence ID": "" },
+        regulatory: { Reference: "", "Workbook application": "", "Official source URL": "", "Page / section pointer": "", "Applied sheets": "", Notes: "", Status: "Pending review", "Last checked": "" },
         evidence: { "Evidence ID": "", "Evidence Type": "", Description: "", "Source System": "", "Mapped Sheet": "03_Production_Input", Status: "Pending", Owner: "", Reviewer: "", Frequency: "", Notes: "" },
       };
       return { ...prev, [section]: [...prev[section], rows[section]] };
@@ -392,6 +395,7 @@ export default function DataEntryPage() {
           { key: "inventory", label: "Inventory", valid: sectionStatus.inventory },
           { key: "constants", label: "Factors & bounds", valid: sectionStatus.constants },
           { key: "evidence", label: "Evidence register", valid: sectionStatus.evidence },
+          { key: "regulatory", label: "Regulatory references", valid: formData.regulatory.length > 0 && formData.regulatory.every(row => referenceIssues(row).length === 0) },
           { key: "review", label: "Review & save", valid: computedStore.readiness.status === "READY_FOR_INTERNAL_REVIEW" },
         ].map((tab) => {
           const isActive = activeTab === tab.key;
@@ -754,6 +758,18 @@ export default function DataEntryPage() {
           </div>
         </div>
       )}
+
+      {activeTab === "regulatory" && <section className="card">
+        <h2>Regulatory reference register</h2>
+        <p>Record the version, section and application of each source. Review dates and statuses are team records, not legal verification. Use Review & save to persist changes with this factory’s calculation.</p>
+        <button type="button" className="btn btn-primary" onClick={() => addRow("regulatory")}>Add reference</button>
+        {formData.regulatory.map((row, idx) => <fieldset key={idx} className="reference-editor"><legend>Reference {idx + 1}</legend>
+          {["Reference", "Workbook application", "Official source URL", "Page / section pointer", "Applied sheets", "Notes", "Status", "Last checked"].map(field => <label key={field}>{field === "Page / section pointer" ? "Document version / section" : field}<input className="form-input" type={field === "Official source URL" ? "url" : field === "Last checked" ? "date" : "text"} value={raw(row, field)} onChange={e => updateRow("regulatory", idx, field, e.target.value)} /></label>)}
+          <button type="button" className="btn btn-secondary" onClick={() => removeRow("regulatory", idx)}>Remove from draft</button>
+        </fieldset>)}
+        {!formData.regulatory.length && <p>No references in this draft. Add a reference to begin.</p>}
+        <button type="button" className="btn btn-primary" onClick={() => setActiveTab("review")}>Review & save</button>
+      </section>}
 
       {/* ── TAB 7: Evidence Register ── */}
       {activeTab === "evidence" && (

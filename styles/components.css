@@ -1466,3 +1466,14 @@
 .factor-context summary, .data-table details summary { cursor:pointer; padding:8px 0; }
 .factor-toolbar :focus-visible, .factor-context :focus-visible, .data-table summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 @media(max-width:640px) { .factor-toolbar, .factor-toolbar label { width:100%; } .factor-review-strip { gap:12px; } }
+
+.reg-register { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; margin-bottom:24px; }
+.reg-register h3 { font-size:20px; margin:16px 0 10px; }
+.reg-register p, .reg-register dd { line-height:1.6; overflow-wrap:anywhere; }
+.reg-register dt { font-weight:600; margin-top:12px; }
+.reg-register dd { margin:4px 0 16px; color:var(--text-secondary); }
+.reg-register summary { cursor:pointer; padding:16px 0; }
+.reference-editor { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; border:1px solid var(--border); border-radius:8px; padding:20px; margin:20px 0; }
+.reference-editor label { display:grid; gap:6px; }
+.reference-editor input { min-height:44px; }
+@media(max-width:760px) { .reg-register, .reference-editor { grid-template-columns:1fr; } }
