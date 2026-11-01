@@ -1421,3 +1421,35 @@
 #app-shell.collapsed .egytrace-sidebar-brand { flex:none; width:32px; }
 #app-shell.collapsed .egytrace-logo-full { display:none; }
 #app-shell.collapsed .egytrace-logo-compact { display:block; width:32px; height:36px; }
+
+/* Portfolio: factory comparison workspace. */
+.portfolio-period, .portfolio-chart-header { display:flex; justify-content:space-between; align-items:center; gap:24px; flex-wrap:wrap; }
+.portfolio-period { padding:18px 0; border-bottom:1px solid #dce5ee; }
+.portfolio-period strong { font-size:20px; color:#17354d; }
+.portfolio-page p { color:#52677d; line-height:1.6; max-width:85ch; }
+.portfolio-summary { display:grid; grid-template-columns:repeat(4,1fr); margin:24px 0; background:#eaf1f7; padding:22px; gap:20px; }
+.portfolio-summary div { display:flex; flex-direction:column; gap:6px; }
+.portfolio-summary strong { font-size:30px; color:#17354d; }
+.portfolio-summary span { color:#40586e; }
+.portfolio-toolbar { display:flex; gap:24px; align-items:end; flex-wrap:wrap; margin:24px 0; }
+.portfolio-page label { display:flex; flex-direction:column; gap:8px; color:#304d65; }
+.portfolio-page input[type=search], .portfolio-page select { min-height:44px; padding:8px 12px; background:white; border:1px solid #9cafc2; border-radius:6px; max-width:100%; }
+.portfolio-page .portfolio-toggle { flex-direction:row; align-items:center; min-height:44px; }
+.portfolio-page .btn { min-height:44px; }
+.portfolio-page :focus-visible { outline:3px solid #1677ff; outline-offset:3px; }
+.portfolio-chart-header { padding:20px; }
+.portfolio-page h2 { font-size:18px; color:#17354d; margin:0; }
+.portfolio-chart { padding:0 20px 20px; }
+.portfolio-comparison { margin-bottom:24px; }
+.portfolio-page small { display:block; margin-top:8px; color:#52677d; }
+.portfolio-caption { text-align:left; padding:12px 20px; color:#52677d; }
+.portfolio-page summary { cursor:pointer; min-height:32px; }
+.portfolio-attention { color:#855000; }
+.portfolio-page td { vertical-align:top; }
+.portfolio-page td ul { white-space:normal; min-width:220px; padding-left:18px; }
+.portfolio-empty, .portfolio-loading { padding:24px; }
+.portfolio-totals { padding:24px; margin-top:24px; }
+.portfolio-totals dl { display:grid; grid-template-columns:repeat(3,1fr); gap:24px; }
+.portfolio-totals dd { margin:8px 0 0; font-size:22px; font-weight:600; }
+.portfolio-totals details { margin-top:20px; }
+@media (max-width:760px) { .portfolio-summary, .portfolio-totals dl { grid-template-columns:repeat(2,1fr); } .portfolio-toolbar, .portfolio-chart-header { align-items:stretch; flex-direction:column; } }
