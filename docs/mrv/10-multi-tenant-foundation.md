@@ -115,6 +115,23 @@ Segregation of duties: submitter cannot approve (service + DB CHECK).
 - `/signin` — development-only synthetic identities. `/admin/access` — members, role grants/revocations per
   factory or tenant-wide. `/portfolio` — per-factory results with reporting boundaries + consolidated intensities.
 
+## 5a. Access Management v1 (`/admin/access`, migration 0008) — 2026-11-01
+
+- Member table (email, roles + scope, status, joined), expiring single-use email-bound invitations shown as a
+  copyable link labelled "Not emailed", role grant/revoke (existing role matrix; tenant admin ≠ approver), tenant
+  access revocation with required reason. Non-administrators get a read-only view of their own permissions; every
+  write is authorized again inside the database RPCs (`mrv_list_members`, `mrv_list_invitations` are guarded by
+  `members.manage`; writes are permission-checking RPCs; last-active-admin guard; all changes audited as
+  `access.*` in `audit_event`).
+- Acceptance results: PGlite DB suite **103/103** (incl. 13 new access-management cases), hosted suite
+  **94/99** (13 new cases green; the 5 non-green are the intentionally skipped evidence-replacement items pending
+  unapplied migration 0007). Production build of the Access Management commit passes and
+  `check-prod-bundle: PASS — 359 build files scanned, none of 10 development markers present`.
+- Rollback checkpoint: branch **`checkpoint-2026-11-01-access-prework`** at commit `e870929f` (state before the
+  Access Management work; migration 0008 had not been applied yet). Rolling back = check out that branch for the
+  app; the database changes are purely additive (0008 table/RPCs) and were applied statement-by-statement to the
+  development project, so no data reset is required to revert the application.
+
 ## 6. Executed isolation tests — actual results
 
 Fixtures (SYNTHETIC): Tenant A "Synthetic Cement Group A" with A1 (integrated kiln plant) and A2 (grinding
