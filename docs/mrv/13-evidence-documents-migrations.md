@@ -1,9 +1,12 @@
 # 13 — Evidence documents: migrations, application & rollback
 
 Scope: the evidence-document persistence layer (Directive 06 §3 — private evidence files).
-Environment: development/test project `vbxvhbnhstdfbkgjuzgs` (owner-designated, test-classified via
+Environment: project `vbxvhbnhstdfbkgjuzgs` (owner-designated test, via
 `MRV_SUPABASE_ENVIRONMENT=test` + `MRV_STAGING_PROJECT_REF` match; 4 synthetic users, 2 synthetic tenants, no live
-customer data).
+customer data). **NOT isolated from the public deployment:** https://cementmrv.traceforce.net is a live build of this
+application whose client bundle contains `https://vbxvhbnhstdfbkgjuzgs.supabase.co` (verified 2026-11-01) — the demo
+application reads and writes this same database and bucket. Its auth users are only the 4 synthetic E2E accounts today
+(read-only check: 4 users, all synthetic, all recent sign-ins from the hosted suite), but any public signup lands here too.
 Rules that apply to every statement here: `db/supabase/*.sql` is applied **additively only**, statement by
 statement, via the SQL tool; nothing is reset, dropped or overwritten; every batch is inspected before it
 is applied; never applied to production without review.
@@ -132,15 +135,39 @@ performed were read-only catalogue queries (owners, `rolbypassrls`, schema/table
 bucket versioning). Hosted validation requires applying 0007 to the designated test database and re-running the
 hosted suite (below).
 
+## Hosted baseline (real Supabase Auth/PostgREST/Storage, pre-0007) and release packaging
+
+Hosted suite `GET /api/dev/hosted-e2e` (2026-11-01, 0007 NOT applied): **81/86**. All real-API checks pass — four
+synthetic logins, wrong-password refusal, anon refusal, signed imports + idempotent retries, all-or-nothing refusal,
+server-built calculations, ranges, tampering/replay/cross-scope refusals, executor-key checks, concurrent
+import/finalize races, cross-tenant, restricted/revoked users, private source files, evidence upload through the real
+service (private bucket + trusted executor), signed-URL byte equality, B refused a signed URL, direct PostgREST
+insert denied, evidence-signature tampering refused, C upload. Not passing: 4 checks skipped while
+`mrv_schema_version()` < 7 (replacement + history, stale-replacement refusal, and the two new race-relevant Storage
+API checks: failed-upload cleanup removes the refused file; a registered file is refused a direct delete) and the
+folder↔document orphan check (17 folders vs 12 documents = exactly the 5 pre-0007 leaked files below; the run created
+no new orphans: +2 folders = +2 documents).
+
+Release packaging (checkpoint commit `00a9bf4b1c46ac9268cddcb1778b27a07ca60755`, branch
+`checkpoint-2026-11-01-0007-packaging`): `pg`, `@types/pg`, `embedded-postgres` moved to devDependencies (lockfile
+refreshed, dev flags verified; no production code imports them — only `tests/mrv/concurrencyHarness.ts`, reachable
+solely from the dev-guarded endpoint's development branch). Fresh `npm run build` of the current source: exit 0;
+`scripts/check-prod-bundle.mjs` against that fresh build: **PASS — 358 build files scanned, none of 10 development
+markers present** (marker list now includes the concurrency suite; the harness cannot execute in production: 404
+route stub outside development, loopback dev-guard, implementation dropped from the production bundle).
+
 ## Applying 0007 to the designated test database (when authorised)
 
 1. Inspect `db/supabase/0007_evidence_replacement_order.sql`: one `create or replace function`
    (`mrv_store_evidence_document`), one helper (`mrv_private.evidence_file_deletable(text, text)`), one marker
    (`public.mrv_schema_version`), one storage policy (`mrv_private_delete_evidence`), plus revoke/grant
    statements. No table, trigger, existing policy or data row is created, dropped or modified.
-2. Apply statement by statement via the SQL tool on `vbxvhbnhstdfbkgjuzgs` (test-classified, no live data).
-3. Post-apply verification: `select public.mrv_schema_version()` → 7; re-run `GET /api/dev/hosted-e2e` — the
-   two replacement checks now execute (the suite auto-detects the migration via the version marker) and must pass.
+2. Apply statement by statement via the SQL tool on `vbxvhbnhstdfbkgjuzgs`. NOTE: this project also serves the public
+   deployment (cementmrv.traceforce.net), whose in-flight evidence replacements would start succeeding the moment the
+   RPC is replaced (server-side function — no redeploy needed). That is the intended fix, but it is a visible behavior
+   change on the public app, so the owner must approve with that knowledge.
+3. Post-apply verification: `select public.mrv_schema_version()` → 7; re-run `GET /api/dev/hosted-e2e` — the four
+   0007-gated checks now execute (the suite auto-detects the migration via the version marker) and must pass.
 4. **One-time orphan review** — five pre-0007 leaked files exist under
    `1388c44a-abdf-482f-9093-4bf3c2ef19f6/35128d23-c903-445f-bd23-499a05a1aa79/evidence/…` (all uploaded by the
    synthetic E2E user `c48ade78-…`, all `hosted-evidence-…-v2.pdf` replacement attempts, none referenced by
