@@ -2,9 +2,10 @@ import { isAllowedRequestOrigin } from "@/lib/server/requestOrigin";
 import { badRequest, HttpError, notFound, unauthenticated } from "@/lib/server/authz/errors";
 import { authenticateRequest, type MrvCaller } from "@/lib/server/supabase/auth";
 import {
-  archiveDataset, calculateRange, createOrganization, evidenceDocumentUrl, facilitySummary, getMe, importDemo, importFile, importManual,
-  latestRun, listEvidenceDocuments, listEvidenceRegister, listFacilities, listImports, listReportImpacts, listRuns, loadRun,
-  readingHistory, savePreference, uploadEvidenceDocument, withdrawReading,
+  acceptInvitation, archiveDataset, calculateRange, createOrganization, evidenceDocumentUrl, facilitySummary, getMe, importDemo,
+  importFile, importManual, invitationPreview, inviteMember, latestRun, listEvidenceDocuments, listEvidenceRegister,
+  listFacilities, listImports, listInvitations, listMembers, listReportImpacts, listRuns, loadRun, readingHistory,
+  revokeInvitation, revokeMemberAccess, savePreference, setMemberRole, uploadEvidenceDocument, withdrawReading,
 } from "./service";
 
 type Params = Record<string, string>;
@@ -90,6 +91,19 @@ const routes: [string, string, Handler][] = [
     },
   ],
   ["GET", "/orgs/:t/facilities/:f/evidence-documents/:id/url", ({ caller, params }) => evidenceDocumentUrl(caller, params.t, params.f, params.id)],
+  // ───────── Access management (tenant administrators; re-checked in the database) ─────────
+  ["GET", "/orgs/:t/members", ({ caller, params }) => listMembers(caller, params.t)],
+  ["GET", "/orgs/:t/members/invitations", ({ caller, params }) => listInvitations(caller, params.t)],
+  ["POST", "/orgs/:t/members/invite", async ({ caller, params, body }) => inviteMember(caller, params.t, await body())],
+  ["POST", "/orgs/:t/members/invitations/:id/revoke", ({ caller, params }) => revokeInvitation(caller, params.t, params.id)],
+  ["POST", "/orgs/:t/members/:m/roles", async ({ caller, params, body }) => setMemberRole(caller, params.t, params.m, await body())],
+  ["POST", "/orgs/:t/members/:m/revoke", async ({ caller, params, body }) => revokeMemberAccess(caller, params.t, params.m, await body())],
+  [
+    "GET",
+    "/invitations/preview",
+    ({ caller, url }) => invitationPreview(caller, url.searchParams.get("token") ?? ""),
+  ],
+  ["POST", "/invitations/accept", async ({ caller, body }) => acceptInvitation(caller, String((await body()).token ?? ""))],
 ];
 
 function match(pattern: string, path: string): Params | null {

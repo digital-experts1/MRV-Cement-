@@ -26,6 +26,7 @@ import { checkRunIntegrity, ENGINE_VERSION, restoreStore, type RunIntegrity, typ
 import { sha256Bytes } from "@/lib/mrv/sha";
 import { dbFail, fetchAll } from "./db";
 import { executorKey } from "./executor";
+import { isRole } from "@/lib/tenancy/permissions";
 
 export interface FacilityView {
   id: string;
@@ -888,4 +889,179 @@ export async function evidenceDocumentUrl(caller: MrvCaller, t: string, f: strin
     throw new HttpError(503, "A download link could not be created; try again");
   }
   return { url: signed.data.signedUrl, expiresAt: new Date(Date.now() + 55_000).toISOString() };
+}
+
+// ───────────────────────── Access management (0008) ─────────────────────────
+// Members, invitations and role assignments of the selected tenant. Authorization is decided in the database
+// (members.manage = tenant administrators); the service re-checks visibility so errors are 404/403, never leaks.
+
+interface MemberRole {
+  role: string;
+  facility_id: string | null;
+}
+export interface MemberView {
+  membershipId: string;
+  userId: string;
+  email: string;
+  status: string;
+  joinedAt: string;
+  revokedAt: string | null;
+  roles: MemberRole[];
+}
+export interface InvitationView {
+  id: string;
+  email: string;
+  role: string;
+  facilityId: string | null;
+  createdAt: string;
+  expiresAt: string;
+  acceptedAt: string | null;
+  revokedAt: string | null;
+}
+
+/** 404 for non-members (no probing), 403 for members without members.manage. */
+async function requireManage(caller: MrvCaller, t: string) {
+  ids(t);
+  const { data, error } = await caller.db.from("tenant").select("id").eq("id", t).maybeSingle();
+  if (error) throw dbFail(error);
+  if (!data) throw notFound();
+  if (!(await can(caller, t, null, "members.manage"))) throw forbidden("Only tenant administrators can manage access");
+}
+
+function roleArg(value: unknown): string {
+  if (!isRole(value)) throw badRequest("Unknown role");
+  return value;
+}
+
+function facilityArg(value: unknown, allowed: { id: string }[]): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string" || !allowed.some((f) => f.id === value)) throw badRequest("Unknown factory");
+  return value;
+}
+
+export async function listMembers(caller: MrvCaller, t: string): Promise<MemberView[]> {
+  await requireManage(caller, t);
+  const { data, error } = await caller.db.rpc("mrv_list_members", { p_tenant: t });
+  if (error) throw dbFail(error);
+  return ((data ?? []) as Record<string, unknown>[]).map((m) => ({
+    membershipId: m.membership_id as string,
+    userId: m.user_id as string,
+    email: m.email as string,
+    status: m.status as string,
+    joinedAt: m.joined_at as string,
+    revokedAt: (m.revoked_at as string | null) ?? null,
+    roles: (m.roles as MemberRole[] | null) ?? [],
+  }));
+}
+
+export async function listInvitations(caller: MrvCaller, t: string): Promise<InvitationView[]> {
+  await requireManage(caller, t);
+  const { data, error } = await caller.db.rpc("mrv_list_invitations", { p_tenant: t });
+  if (error) throw dbFail(error);
+  return ((data ?? []) as Record<string, unknown>[]).map((i) => ({
+    id: i.id as string,
+    email: i.email as string,
+    role: i.role as string,
+    facilityId: (i.facility_id as string | null) ?? null,
+    createdAt: i.created_at as string,
+    expiresAt: i.expires_at as string,
+    acceptedAt: (i.accepted_at as string | null) ?? null,
+    revokedAt: (i.revoked_at as string | null) ?? null,
+  }));
+}
+
+/** Creates the invitation; the returned token is shown once as a copyable link ("Not emailed"). */
+export async function inviteMember(
+  caller: MrvCaller,
+  t: string,
+  body: Record<string, unknown>
+): Promise<{ token: string; expiresAt: string; email: string; role: string; facilityId: string | null }> {
+  if (Object.keys(body).some((k) => !["email", "role", "facilityId"].includes(k))) throw badRequest("Unknown field");
+  await requireManage(caller, t);
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 160) throw badRequest("A valid email address is required");
+  const role = roleArg(body.role);
+  if (role === "tenant_admin" && body.facilityId) throw badRequest("Tenant administrators always have tenant-wide access");
+  const facilities = await caller.db.from("facility").select("id").eq("tenant_id", t);
+  if (facilities.error) throw dbFail(facilities.error);
+  const facilityId = facilityArg(body.facilityId, facilities.data as { id: string }[]);
+  const { data, error } = await caller.db.rpc("mrv_invite_member", {
+    p_tenant: t, p_email: email, p_role: role, p_facility: facilityId,
+  });
+  if (error) throw dbFail(error);
+  const token = data as string;
+  const { data: row } = await caller.db.from("tenant_invitation").select("expires_at").eq("tenant_id", t).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  return { token, expiresAt: (row?.expires_at as string | undefined) ?? "", email, role, facilityId };
+}
+
+export async function revokeInvitation(caller: MrvCaller, t: string, invitationId: string) {
+  await requireManage(caller, t);
+  if (!isUuid(invitationId)) throw notFound();
+  const { error } = await caller.db.rpc("mrv_revoke_invitation", { p_tenant: t, p_invitation: invitationId });
+  if (error) throw dbFail(error);
+  return { ok: true };
+}
+
+export async function setMemberRole(caller: MrvCaller, t: string, membershipId: string, body: Record<string, unknown>) {
+  if (Object.keys(body).some((k) => !["role", "facilityId", "grant"].includes(k))) throw badRequest("Unknown field");
+  await requireManage(caller, t);
+  if (!isUuid(membershipId)) throw notFound();
+  if (typeof body.grant !== "boolean") throw badRequest("grant must be true or false");
+  const role = roleArg(body.role);
+  if (role === "tenant_admin" && body.facilityId) throw badRequest("Tenant administrators always have tenant-wide access");
+  const facilities = await caller.db.from("facility").select("id").eq("tenant_id", t);
+  if (facilities.error) throw dbFail(facilities.error);
+  const facilityId = facilityArg(body.facilityId, facilities.data as { id: string }[]);
+  const { error } = await caller.db.rpc("mrv_set_member_role", {
+    p_tenant: t, p_membership: membershipId, p_role: role, p_facility: facilityId, p_grant: body.grant,
+  });
+  if (error) throw dbFail(error);
+  return { ok: true };
+}
+
+export async function revokeMemberAccess(caller: MrvCaller, t: string, membershipId: string, body: Record<string, unknown>) {
+  if (Object.keys(body).some((k) => k !== "reason")) throw badRequest("Unknown field");
+  await requireManage(caller, t);
+  if (!isUuid(membershipId)) throw notFound();
+  if (typeof body.reason !== "string" || body.reason.trim().length < 3 || body.reason.length > 500)
+    throw badRequest("A reason (3–500 characters) is required");
+  const { error } = await caller.db.rpc("mrv_revoke_member_access", {
+    p_tenant: t, p_membership: membershipId, p_reason: body.reason.trim(),
+  });
+  if (error) throw dbFail(error);
+  return { ok: true };
+}
+
+export interface InvitationPreview {
+  tenantId: string;
+  tenantName: string;
+  email: string;
+  role: string;
+  facilityId: string | null;
+  expiresAt: string;
+}
+
+/** What the token holder may see before accepting. Null for invalid/expired/used/revoked tokens. */
+export async function invitationPreview(caller: MrvCaller, token: string): Promise<InvitationPreview | null> {
+  if (!/^[0-9a-f]{64}$/.test(token)) return null;
+  const { data, error } = await caller.db.rpc("mrv_invitation_preview", { p_token: token });
+  if (error) throw dbFail(error);
+  const row = ((data ?? []) as Record<string, unknown>[])[0];
+  if (!row) return null;
+  return {
+    tenantId: row.tenant_id as string,
+    tenantName: row.tenant_name as string,
+    email: row.email as string,
+    role: row.role as string,
+    facilityId: (row.facility_id as string | null) ?? null,
+    expiresAt: row.expires_at as string,
+  };
+}
+
+/** Accepts the invitation with the signed-in account (must be the invited email). Returns the joined tenant. */
+export async function acceptInvitation(caller: MrvCaller, token: string): Promise<{ tenantId: string }> {
+  if (!/^[0-9a-f]{64}$/.test(token)) throw badRequest("Invalid invitation");
+  const { data, error } = await caller.db.rpc("mrv_accept_invitation", { p_token: token });
+  if (error) throw dbFail(error);
+  return { tenantId: data as string };
 }

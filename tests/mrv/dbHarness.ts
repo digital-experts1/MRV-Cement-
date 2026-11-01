@@ -581,6 +581,164 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     const dImports = await delObj(USERS.A, importsPath);
     check("non-evidence private files (imports) cannot be deleted by the application role", dImports.err === null && dImports.exists, dImports);
 
+    // ── 13. Access management (0008): member listing, invitations, role grants, revocation, last-admin guard ──
+    await su(); // migrations apply as the database owner, like the initial batch
+    await pg.exec(sqlFile("0008_access_management.sql"));
+    check("0008 (access management) applies on PostgreSQL", true);
+    const USERS_D = "dddddddd-0000-4000-8000-000000000004";
+    await pg.query("insert into auth.users (id, email) values ($1, $2)", [USERS_D, "d@synthetic.test"]);
+    const memA = (await one<{ id: string }>("select id from public.tenant_membership where tenant_id = $1 and user_id = $2", [tA, USERS.A])).id;
+    const listMembers = async (uid: string, t: string) => {
+      await as(uid);
+      return (await pg.query<{ membership_id: string; email: string; status: string; roles: { role: string; facility_id: string | null }[] }>(
+        "select * from public.mrv_list_members($1)", [t])).rows;
+    };
+    const inviteErr = async (uid: string, t: string, email: string, role: string, f: string | null) => {
+      await as(uid);
+      return err(() => pg.query("select public.mrv_invite_member($1, $2, $3, $4) as r", [t, email, role, f]));
+    };
+    const roleChange = async (uid: string, t: string, membership: string, role: string, f: string | null, grant: boolean) => {
+      await as(uid);
+      return err(() => pg.query("select public.mrv_set_member_role($1, $2, $3, $4, $5)", [t, membership, role, f, grant]));
+    };
+
+    // (a) The tenant administrator lists their own members with roles and status.
+    const membersA = await listMembers(USERS.A, tA);
+    check("tenant admin lists members with email, status and roles (A + C; no B)",
+      membersA.length === 2 && membersA.every((m) => m.status === "active")
+        && membersA.some((m) => m.email === "a@synthetic.test" && m.roles.some((r) => r.role === "tenant_admin" && r.facility_id === null))
+        && membersA.some((m) => m.email === "c@synthetic.test"), membersA);
+
+    // (b) Tenant isolation: B (admin of B) cannot list or even read A's memberships.
+    const eBList = await (async () => { await as(USERS.B); return err(() => pg.query("select * from public.mrv_list_members($1)", [tA])); })();
+    await as(USERS.B);
+    const bMembers = Number((await one<{ n: number }>("select count(*)::int as n from public.tenant_membership where tenant_id = $1", [tA])).n);
+    check("B cannot list or read A's members (RPC 42501, RLS hides all rows)", !!eBList && eBList.startsWith("42501") && bMembers === 0, { eBList, bMembers });
+
+    // (c) A non-administrative member (C) cannot change permissions through the RPCs or by direct table access.
+    const eCList = await (async () => { await as(USERS.C); return err(() => pg.query("select * from public.mrv_list_members($1)", [tA])); })();
+    const eCInvite = await inviteErr(USERS.C, tA, "x@synthetic.test", "reviewer", null);
+    const eCRole = await roleChange(USERS.C, tA, memA, "reviewer", null, true);
+    await as(USERS.C);
+    const eCRevoke = await err(() => pg.query("select public.mrv_revoke_member_access($1, $2, $3)", [tA, memA, "no reason"]));
+    const eCIns = await err(() => pg.query("insert into public.role_assignment (tenant_id, membership_id, role) values ($1, $2, 'reviewer')", [tA, memC]));
+    const eCInvIns = await err(() => pg.query("insert into public.tenant_invitation (tenant_id, email, role, token_hash, invited_by) values ($1, $2, 'reviewer', $3, $4)", [tA, "x@synthetic.test", "0".repeat(64), USERS.C]));
+    check("non-admin C is refused by every write RPC and every direct write (SELECT-only grants)",
+      [eCList, eCInvite, eCRole, eCRevoke, eCIns, eCInvIns].every((e) => !!e && e.startsWith("42501")), { eCList, eCInvite, eCRole, eCRevoke, eCIns, eCInvIns });
+
+    // (d) Invitation lifecycle: expiring, single-use, bound to the invited email, factory-scoped.
+    const tok1 = (await (async () => { await as(USERS.A); return one<{ r: string }>("select public.mrv_invite_member($1, $2, $3, $4) as r", [tA, "d@synthetic.test", "reviewer", fA1]); })()).r;
+    check("admin invites D as factory-scoped reviewer and receives a one-time token", /^[0-9a-f]{64}$/.test(tok1), { tokLen: tok1?.length });
+    await as(USERS_D);
+    const prev = (await pg.query<{ tenant_name: string; role: string; facility_id: string }>("select * from public.mrv_invitation_preview($1)", [tok1])).rows[0];
+    check("token holder can preview the invitation before accepting", prev?.tenant_name === "Synthetic Org A" && prev?.role === "reviewer" && prev?.facility_id === fA1, prev);
+    await as(USERS.A);
+    const eWrongAcct = await err(() => pg.query("select public.mrv_accept_invitation($1)", [tok1]));
+    check("the invitation cannot be accepted by a different account (email-bound)", !!eWrongAcct && eWrongAcct.startsWith("42501") && /different email/.test(eWrongAcct), eWrongAcct);
+    await as(USERS_D);
+    const joined = (await one<{ r: string }>("select public.mrv_accept_invitation($1) as r", [tok1])).r;
+    const dRow = await one<{ status: string; perms: number; f1: number; f2: number }>(
+      `select (select status from public.tenant_membership where tenant_id = $1 and user_id = $2) as status,
+              (select count(*)::int from public.mrv_my_permissions($1) where permission = 'facility.read') as perms,
+              (select count(*)::int from public.activity_reading where tenant_id = $1 and facility_id = $3 and is_current) as f1,
+              (select count(*)::int from public.activity_reading where tenant_id = $1 and facility_id = $4 and is_current) as f2`,
+      [tA, USERS_D, fA1, fA2]);
+    check("D accepts, becomes an active member, and the factory-scoped role reaches ONLY factory A1 (not A2)",
+      joined === tA && dRow.status === "active" && dRow.perms > 0 && dRow.f1 > 0 && dRow.f2 === 0, { joined, dRow });
+    await as(USERS_D);
+    const eReuse = await err(() => pg.query("select public.mrv_accept_invitation($1)", [tok1]));
+    check("a used invitation token cannot be reused", !!eReuse && eReuse.startsWith("22023") && /already used|invalid/.test(eReuse), eReuse);
+    const eAgain = await inviteErr(USERS.A, tA, "d@synthetic.test", "reviewer", null);
+    check("inviting an existing active member is refused", !!eAgain && eAgain.startsWith("22023") && /already an active member/.test(eAgain), eAgain);
+
+    // (e) Role grants and revocations follow the existing rules and are audited.
+    const memD2 = (await one<{ id: string }>("select id from public.tenant_membership where tenant_id = $1 and user_id = $2", [tA, USERS_D])).id;
+    const gAud = await roleChange(USERS.A, tA, memD2, "auditor", null, true);
+    await as(USERS_D);
+    const dF2 = Number((await one<{ n: number }>("select count(*)::int as n from public.activity_reading where tenant_id = $1 and facility_id = $2 and is_current", [tA, fA2])).n);
+    const rAud = await roleChange(USERS.A, tA, memD2, "auditor", null, false);
+    await as(USERS_D);
+    const dF2After = Number((await one<{ n: number }>("select count(*)::int as n from public.activity_reading where tenant_id = $1 and facility_id = $2 and is_current", [tA, fA2])).n);
+    check("tenant-wide auditor grant reaches every factory; revoking it ends that access",
+      gAud === null && dF2 > 0 && rAud === null && dF2After === 0, { gAud, dF2, rAud, dF2After });
+    const eUnassigned = await roleChange(USERS.A, tA, memD2, "auditor", null, false);
+    check("revoking a role that is not assigned is refused", !!eUnassigned && eUnassigned.startsWith("22023"), eUnassigned);
+    check("granting tenant_admin scoped to a factory is refused (tenant-wide only)", (await roleChange(USERS.A, tA, memD2, "tenant_admin", fA1, true))?.startsWith("22023") === true);
+    check("granting an unknown role is refused", (await roleChange(USERS.A, tA, memD2, "wizard", null, true))?.startsWith("22023") === true);
+    check("granting into another tenant's factory is refused", (await roleChange(USERS.A, tA, memD2, "auditor", fB1, true))?.startsWith("22023") === true);
+    check("granting to an unknown membership is refused", (await roleChange(USERS.A, tA, crypto.randomUUID(), "auditor", null, true))?.startsWith("22023") === true);
+
+    // (f) The last active tenant administrator can neither be demoted nor removed.
+    await as(USERS.A);
+    const eSelfDemote = await err(() => pg.query("select public.mrv_set_member_role($1, $2, 'tenant_admin', null, false)", [tA, memA]));
+    const eSelfRemove = await err(() => pg.query("select public.mrv_revoke_member_access($1, $2, $3)", [tA, memA, "no reason"]));
+    check("the sole tenant admin cannot demote or remove themselves", [eSelfDemote, eSelfRemove].every((e) => !!e && e.startsWith("22023") && /last active tenant administrator/.test(e)), { eSelfDemote, eSelfRemove });
+    const gDAdmin = await roleChange(USERS.A, tA, memD2, "tenant_admin", null, true);
+    check("granting a second tenant admin works", gDAdmin === null, gDAdmin);
+    const rAAdmin = await roleChange(USERS.A, tA, memA, "tenant_admin", null, false);
+    check("with a second admin in place, A's own admin role can be revoked", rAAdmin === null, rAAdmin);
+    const eANoManage = await (async () => { await as(USERS.A); return err(() => pg.query("select * from public.mrv_list_members($1)", [tA])); })();
+    check("after losing the admin role, A can no longer manage members (UI-equivalent RPC refused)", !!eANoManage && eANoManage.startsWith("42501"), eANoManage);
+    const gBack = await roleChange(USERS_D, tA, memA, "tenant_admin", null, true);
+    const rDAdmin = await roleChange(USERS.A, tA, memD2, "tenant_admin", null, false);
+    check("admin D re-arms A; D's own admin role is then revocable (A is admin again)", gBack === null && rDAdmin === null, { gBack, rDAdmin });
+
+    // (g) Revoking a member's tenant access: nothing is deleted, access ends immediately (same session), re-invite reactivates.
+    await as(USERS.A);
+    const eNoReason = await err(() => pg.query("select public.mrv_revoke_member_access($1, $2, $3)", [tA, memD2, "ab"]));
+    check("revocation requires a reason (audit trail)", !!eNoReason && eNoReason.startsWith("22023"), eNoReason);
+    await as(USERS.A);
+    await pg.query("select public.mrv_revoke_member_access($1, $2, $3)", [tA, memD2, "Synthetic access test: member left the organization"]);
+    await as(USERS_D); // same signed-in session — the check is live, not cached
+    const dAfter = await one<{ status: string; f1: number; own: number }>(
+      `select (select status from public.tenant_membership where id = $2) as status,
+              (select count(*)::int from public.activity_reading where tenant_id = $1 and facility_id = $3 and is_current) as f1,
+              (select count(*)::int from public.tenant) as own`,
+      [tA, memD2, fA1]);
+    // The auth account, membership row and history are NOT deleted (verified in owner mode: authenticated correctly has
+    // no direct grant on auth.users).
+    await su();
+    const kept = await one<{ authUser: number; memberRow: number; history: number }>(
+      `select (select count(*)::int from auth.users where id = $1) as "authUser",
+              (select count(*)::int from public.tenant_membership where id = $2) as "memberRow",
+              (select count(*)::int from public.role_assignment where membership_id = $2) as history`,
+      [USERS_D, memD2]);
+    const eDImport = await err(() => rpc<{ status: string }>(USERS_D, "mrv_import_v2", "import", tA, fA1, JSON.stringify({ batch: { id: crypto.randomUUID(), origin: "workbook", status: "accepted", filename: "x.xlsx", sha256: null, size_bytes: null, mime: null, storage_path: null, errors: [], assertions: [], declared_period_start: "2025-01-01", declared_period_end: "2025-03-31", synthetic: true, mapping: MONTHLY, effective_from: "2025-01-01", effective_to: "2025-03-31", effective_basis: "declared_period" }, readings: [], documents: [] })));
+    check("revoked access is denied immediately in the same session; account, membership row and history are kept",
+      dAfter.status === "revoked" && dAfter.f1 === 0 && dAfter.own === 0 && kept.authUser === 1 && kept.memberRow === 1 && kept.history > 0 && !!eDImport && eDImport.startsWith("42501"), { dAfter, kept, eDImport });
+
+    // (h) Expired invitations are refused; the admin can revoke an open one; a revoked member can be re-invited (reactivation).
+    const tok2 = (await (async () => { await as(USERS.A); return one<{ r: string }>("select public.mrv_invite_member($1, $2, $3, $4) as r", [tA, "d@synthetic.test", "reviewer", fA1]); })()).r;
+    await su();
+    await pg.query("update public.tenant_invitation set created_at = now() - interval '10 minutes', expires_at = now() - interval '1 minute' where token_hash = encode(sha256(convert_to($1, 'utf8')), 'hex')", [tok2]);
+    await as(USERS_D);
+    const eExpired = await err(() => pg.query("select public.mrv_accept_invitation($1)", [tok2]));
+    const prevExpired = (await pg.query("select * from public.mrv_invitation_preview($1)", [tok2])).rows.length;
+    check("an expired invitation cannot be accepted or even previewed", !!eExpired && eExpired.startsWith("22023") && prevExpired === 0, { eExpired, prevExpired });
+    const tok3 = (await (async () => { await as(USERS.A); return one<{ r: string }>("select public.mrv_invite_member($1, $2, $3, $4) as r", [tA, "d@synthetic.test", "reviewer", fA1]); })()).r;
+    const inv3 = (await one<{ id: string }>("select id from public.tenant_invitation where token_hash = encode(sha256(convert_to($1, 'utf8')), 'hex')", [tok3])).id;
+    await as(USERS.A);
+    await pg.query("select public.mrv_revoke_invitation($1, $2)", [tA, inv3]);
+    await as(USERS_D);
+    const eInvRevoked = await err(() => pg.query("select public.mrv_accept_invitation($1)", [tok3]));
+    check("a revoked invitation cannot be accepted", !!eInvRevoked && eInvRevoked.startsWith("22023"), eInvRevoked);
+    const tok4 = (await (async () => { await as(USERS.A); return one<{ r: string }>("select public.mrv_invite_member($1, $2, $3, $4) as r", [tA, "d@synthetic.test", "reviewer", fA1]); })()).r;
+    await as(USERS_D);
+    const rejoined = (await one<{ r: string }>("select public.mrv_accept_invitation($1) as r", [tok4])).r;
+    const dBack = await one<{ status: string; f1: number }>(
+      `select (select status from public.tenant_membership where id = $2) as status,
+              (select count(*)::int from public.activity_reading where tenant_id = $1 and facility_id = $3 and is_current) as f1`,
+      [tA, memD2, fA1]);
+    check("re-invite reactivates the existing membership row and restores the invited role", rejoined === tA && dBack.status === "active" && dBack.f1 > 0, { rejoined, dBack });
+
+    // (i) Other tenants are untouched by all of the above; every change is in the audit trail.
+    await as(USERS.B);
+    const bOwn = Number((await one<{ n: number }>("select count(*)::int from public.tenant where id = $1", [tB])).n);
+    await as(USERS.A);
+    const audits = (await pg.query<{ action: string }>("select action from public.audit_event where tenant_id = $1 and action like 'access.%' order by action", [tA])).rows.map((r) => r.action);
+    check("B's own organization is untouched, and A reads its access audit trail (tenant-level audit.read)",
+      bOwn === 1 && ["access.invitation.accept", "access.invitation.create", "access.member.revoke", "access.role.grant", "access.role.revoke", "access.role.grant"].every((a) => audits.includes(a)), { bOwn, audits });
+
   } catch (e) {
     check("harness completed without unexpected error", false, e instanceof Error ? `${(e as { code?: string }).code ?? ""} ${e.message}` : String(e));
   } finally {
