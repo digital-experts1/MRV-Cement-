@@ -15,6 +15,7 @@ const MARKERS = [
   ["isolation suite", "Tenant A cannot list, read, edit or export Tenant B records"],
   ["acceptance runner cases", "Imported PASS cannot override computed failure"],
   ["Q1 fixture reconciliation", "pending owner confirmation"],
+  ["concurrency suite", "concurrency suite completed without an unexpected error"],
 ];
 
 const roots = [".next/server", ".next/static"];

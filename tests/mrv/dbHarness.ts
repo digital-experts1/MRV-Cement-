@@ -36,8 +36,18 @@ create function auth.uid() returns uuid language sql stable as $$ select nullif(
 grant usage on schema auth to anon, authenticated, service_role;
 create schema storage;
 create table storage.buckets (id text primary key, name text, public boolean, file_size_limit bigint);
-create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text, owner uuid, created_at timestamptz not null default now());
+create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text, owner uuid, owner_id text,
+  created_at timestamptz not null default now(), unique (bucket_id, name));
 alter table storage.objects enable row level security;
+-- Mirrors Supabase's storage.protect_delete(): direct DELETEs are refused unless the Storage API flag is set.
+create function storage.protect_delete() returns trigger language plpgsql as $$
+begin
+  if coalesce(current_setting('storage.allow_delete_query', true), 'false') != 'true' then
+    raise exception 'Direct deletion from storage tables is not allowed. Use the Storage API instead.' using errcode = '42501';
+  end if;
+  return null;
+end $$;
+create trigger protect_objects_delete before delete on storage.objects for each statement execute function storage.protect_delete();
 create function storage.foldername(name text) returns text[] language sql immutable as $$
   select (string_to_array(name, '/'))[1:array_length(string_to_array(name, '/'), 1) - 1] $$;
 grant usage on schema storage to authenticated;
@@ -498,6 +508,24 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     const eRef = await err(() => rpc<string>(USERS.A, "mrv_store_evidence_document", "evidence", tA, fA1, evidenceDocBody(ev4, "EV-2", `${tA}/${fA1}/evidence/${ev4}/v4.pdf`, ev2)));
     check("replacement across a different evidence reference is refused", !!eRef && eRef.startsWith("22023") && /same evidence reference/.test(eRef), eRef);
 
+    // (d2) The RPC pins the uploaded file: a missing file or another user's file is refused and nothing is stored.
+    // (Sequential sanity only — the concurrent interleavings are proven in tests/mrv/concurrencyHarness.ts.)
+    const ev5 = crypto.randomUUID();
+    const eMissing = await err(() => rpc<string>(USERS.A, "mrv_store_evidence_document", "evidence", tA, fA1, evidenceDocBody(ev5, "EV-1", `${tA}/${fA1}/evidence/${ev5}/missing.pdf`, ev2)));
+    const ev6 = crypto.randomUUID();
+    const ev6Path = `${tA}/${fA1}/evidence/${ev6}/foreign.pdf`;
+    await su();
+    await pg.query("insert into storage.objects (bucket_id, name, owner) values ('mrv-private', $1, $2)", [ev6Path, USERS.C]);
+    const eForeign = await err(() => rpc<string>(USERS.A, "mrv_store_evidence_document", "evidence", tA, fA1, evidenceDocBody(ev6, "EV-1", ev6Path, ev2)));
+    await su();
+    const pinned = await one<{ n: number; cur2: boolean }>(
+      "select (select count(*)::int from public.evidence_document where id in ($1, $2)) as n, (select is_current from public.evidence_document where id = $3) as cur2",
+      [ev5, ev6, ev2]
+    );
+    check("registration refuses a missing uploaded file and another user's file; nothing stored, v2 still current",
+      !!eMissing && /uploaded file was not found/.test(eMissing) && !!eForeign && eForeign.startsWith("42501") && pinned.n === 0 && pinned.cur2 === true,
+      { eMissing, eForeign, pinned });
+
     // (e) Rows are immutable for the application role (SELECT-only grant) and undeletable.
     await as(USERS.A);
     const eUpd = await err(() => pg.query("update public.evidence_document set filename = 'x' where id = $1", [ev1]));
@@ -519,6 +547,8 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
       await as(uid);
       let err: string | null = null;
       try {
+        // Like the Storage API: set its delete flag (Supabase's protect_delete trigger), then DELETE under RLS.
+        await pg.query("select set_config('storage.allow_delete_query', 'true', false)");
         await pg.query("delete from storage.objects where name = $1", [path]);
       } catch (e) {
         const x = e as { code?: string; message?: string };

@@ -860,8 +860,11 @@ export async function uploadEvidenceDocument(
     return { documentId: id };
   } catch (e) {
     // Failed-upload cleanup: never leave an orphaned file behind when the metadata write is rejected.
+    // The Storage DELETE policy refuses (0 rows) if the metadata write actually committed (e.g. a lost response), so a
+    // registered file is never removed here; the RPC's row lock serializes this against an in-flight registration.
     const rm = await caller.db.storage.from(PRIVATE_BUCKET).remove([storagePath]);
     if (rm.error) console.error("[mrv] evidence cleanup after a failed metadata write failed", { message: rm.error.message });
+    else if (!rm.data?.length) console.warn("[mrv] evidence cleanup removed nothing; the file is retained (registered or not removable)");
     throw e;
   }
 }

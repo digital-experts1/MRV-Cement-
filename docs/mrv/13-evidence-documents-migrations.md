@@ -13,7 +13,7 @@ is applied; never applied to production without review.
 | Migration | State | Contents |
 |---|---|---|
 | `0006_evidence_documents.sql` | **Applied** (dev) | `evidence_document` table (append-only, one mutable transition: retire-and-supersede), `evidence_document_supersede_only` trigger, trusted-executor RPC `mrv_store_evidence_document`, grants + RLS, service API path `…/evidence-documents`. Storage layout: `mrv-private/<tenant>/<facility>/evidence/<documentId>/<filename>`. |
-| `0007_evidence_replacement_order.sql` | **Written, reviewed and executed in an isolated local PostgreSQL; NOT applied to the remote database** | Replaces `mrv_store_evidence_document` (fixes the replacement FK ordering bug), adds the owner-scoped Storage delete policy `mrv_private_delete_evidence` + helper `mrv_private.evidence_file_registered`, adds the `mrv_schema_version()` marker (returns 7). |
+| `0007_evidence_replacement_order.sql` | **Written, reviewed and executed in an isolated local PostgreSQL; NOT applied to the remote database** | Replaces `mrv_store_evidence_document` (fixes the replacement FK ordering bug), pins the uploaded file inside the RPC (FOR SHARE row lock + owner check), adds the owner-scoped Storage delete policy `mrv_private_delete_evidence` + lock-then-check helper `mrv_private.evidence_file_deletable(bucket, name)`, adds the `mrv_schema_version()` marker (returns 7). |
 
 ## Why 0007 is needed (CONFIRMED, reproduced on real PostgreSQL)
 
@@ -40,42 +40,102 @@ Every condition below is required at once, on `storage.objects` for `authenticat
 - `owner = auth.uid()` — **only the file's own uploader** can delete it (live data confirms `storage.objects.owner`
   is the uploading user's id). Another member's pending upload — even an authorized colleague's — is protected;
 - `mrv_auth.has_permission(tenant, facility, 'upload.create')` — scoped to the caller's own facility;
-- `not mrv_private.evidence_file_registered(name)` — a path referenced by any `evidence_document.storage_path`
-  row (the helper is SECURITY DEFINER, so row visibility can never hide a registered file) is undeletable, even
-  by its own uploader.
+- `mrv_private.evidence_file_deletable(bucket_id, name)` — locks the object row, then refuses if any
+  `evidence_document.storage_path` references it (see the race section).
 
-Residual race, accepted and bounded: the uploader deleting their OWN in-flight file between their own upload and
-their own metadata commit can only break their own in-flight RPC (self-inflicted; the RPC reports the missing
-file). No cross-user path exists. Policy expressions evaluate with the table owner's privileges (verified: the app
-role cannot call `mrv_private.*` directly), so the helper's schema privilege does not affect callers.
+### Privilege model (corrected)
 
-## Executed validation (isolated local PostgreSQL / PGlite harness, `tests/mrv/dbHarness.ts`, 75/75)
+The previous text said policy expressions evaluate "with the table owner's privileges". **That was wrong.** Two
+separate mechanisms are involved:
 
-The migration is **executed**, not just inspected: the harness applies 0001–0006 verbatim, then 0007 verbatim
-mid-run, and asserts — under the `authenticated` role with per-user JWT claims, as PostgREST invokes RPCs:
+| Mechanism | Runs with | Consequence here |
+|---|---|---|
+| RLS policy expression | the **querying** role (`authenticated`, with the caller's JWT claims; `auth.uid()` is the caller) | every function the expression calls needs EXECUTE for `authenticated` |
+| `SECURITY DEFINER` function body | the function's **owner** (`postgres` on the live project: non-superuser, `rolbypassrls = true` — verified read-only) | the helper's metadata lookup and row lock are not limited by the caller's RLS visibility or table grants |
+| Schema USAGE | checked when a name is **resolved**; the policy is parsed once by the migration owner and stored by OID | `authenticated` needs no USAGE on `mrv_private` for the policy to work, and without it cannot call the helper by name |
 
-- 0006's replacement is refused with SQLSTATE 23503 (bug reproduced), stores nothing, leaves v1 current;
-- 0007 applies and `mrv_schema_version()` = 7; the SAME replacement then succeeds — v1 retired and
-  superseded, v2 current, history preserved;
-- replacing an already-replaced document is refused ("no longer current") and stores nothing;
-- a replacement across a different evidence reference is refused;
-- direct authenticated UPDATE/DELETE of document rows is refused (SELECT-only grant + immutability trigger);
-- B (other tenant) reads none of A's documents and cannot store one into A's factory;
-- storage deletes: A cannot delete C's pending upload; C removes its own pending file; the uploader removes
-  its own orphaned file; a metadata-referenced file survives even its own uploader's DELETE (RLS filters —
-  never raises — so every case is asserted via the object's survival); non-evidence (imports) files survive.
+Grants are minimal: the helper has EXECUTE for `authenticated` only (plus its owner); PUBLIC, `anon` and
+`service_role` are revoked (`service_role` bypasses RLS and never evaluates the policy). `authenticated` keeps
+**no** USAGE on `mrv_private` (live, read-only: `has_schema_privilege('authenticated','mrv_private','USAGE') = false`;
+0007 does not change it). Verified on real PostgreSQL 17.5 (concurrency suite, below): direct call by name →
+`42501 permission denied for schema mrv_private`; revoking EXECUTE from `authenticated` (inside a rolled-back
+transaction) makes the policy-guarded DELETE fail with `42501 permission denied for function
+evidence_file_deletable` — proof that the expression runs as the querying user; the helper's `FOR UPDATE` succeeds
+although `authenticated` has no UPDATE on `storage.objects` in the stand-in — proof the body runs as the owner.
 
-Pure self-test 41/41 and the full TypeScript check are green. Production build green, and the repository's
-`scripts/check-prod-bundle.mjs` executed against a real `next build --webpack` of the current source:
-**PASS — 354 build files scanned, none of 9 development markers present.**
+### Upload-registration vs. deletion race (proven, then fixed)
 
-Not yet verified: the hosted Supabase stack (PostgREST/Storage API behaviour) with 0007 applied — that requires
-applying 0007 to the designated test database (below) and re-running the hosted suite.
+Complete flow (`lib/server/mrv/service.ts uploadEvidenceDocument`): validate → Storage upload (caller's JWT; INSERT
+policy `mrv_private_insert`; Storage sets `owner`/`owner_id`) → trusted-executor RPC `mrv_store_evidence_document`
+→ on any RPC error, `storage.remove([path])` (caller's JWT; DELETE policy above). Triggers on the path:
+`storage.objects`: `protect_objects_delete` (statement-level; refuses direct SQL deletes unless the Storage API sets
+`storage.allow_delete_query`) and `update_objects_updated_at`; `evidence_document`: `evidence_document_supersede_only`
+(immutability). None of them lock or check the other side. The RPC as previously written never looked at
+`storage.objects`, and the pre-fix helper was a STABLE existence check evaluated with the DELETE statement's
+snapshot. Result (reproduced with separate concurrent transactions — below): in **both** interleavings both
+transactions committed and metadata referenced a deleted file. The earlier "residual race is self-inflicted and the
+RPC reports the missing file" claim was wrong: the RPC reported nothing. The app's own cleanup can trigger it — the
+`catch` runs on *any* RPC error, including a lost response after the RPC actually committed.
+
+Fix — one serialization point, the `storage.objects` row:
+
+1. The RPC share-locks the uploaded object row (`FOR SHARE`) before inserting metadata, refusing if it is missing
+   (`22023 the uploaded file was not found; nothing was stored`) or owned by someone else (`42501`).
+2. The helper takes `FOR UPDATE` on the same row **before** checking metadata. It is VOLATILE PL/pgSQL, so its
+   next statement gets a fresh READ COMMITTED snapshot and sees a registration that committed while it waited.
+3. Outside READ COMMITTED the helper refuses (fail-closed); the Storage API uses READ COMMITTED.
+4. Both Storage delete orders take this row lock before the metadata check — the direct `DELETE … RETURNING` under
+   RLS, and the current upstream storage-api order (superuser `FOR UPDATE`, then a caller-role DELETE probe, then the
+   delete) — so there is no lock-order inversion. Assumes `mrv-private` versioning stays DISABLED (verified live).
+
+Outcomes: deletion first → the RPC waits, then fails, nothing stored; registration first → the delete waits, then
+affects 0 rows, file retained. Concurrent replacements of one document stay serialized by the existing per-facility
+advisory lock plus `FOR UPDATE … is_current`.
+
+## Executed validation
+
+### A. Real multi-connection PostgreSQL — concurrency (`tests/mrv/concurrencyHarness.ts`, 19/19)
+
+Throwaway local cluster (embedded-postgres, PostgreSQL 17.5, deleted afterwards), one backend process per
+connection; interleavings forced by polling `pg_stat_activity` until the second transaction is actually waiting on
+a lock. Database `prefix` = 0001–0006 + frozen pre-fix 0007 (`tests/mrv/fixtures/0007_pre_race_fix.sql`, commit
+cc4009c); database `fixed` = 0001–0007 as committed now. Each race case runs for both delete flows (direct / locked).
+
+| Case | pre-fix 0007 | fixed 0007 |
+|---|---|---|
+| Deletion wins | registration not blocked, commits; metadata 1, file 0 → **dangling** (race reproduced) | registration waits (`Lock/transactionid`), fails "uploaded file was not found"; metadata 0, audit 0, file 0 |
+| Registration wins | delete not blocked, deletes 1; metadata 1, file 0 → **dangling** (race reproduced) | delete waits (`Lock/transactionid`), deletes 0; metadata 1, file 1 |
+| Two replacements of one document, ordered | — | second waits (`Lock/advisory`), refused "no longer current"; old retired → superseded by the winner, one current |
+| Two replacements fired simultaneously | — | exactly one commits, the other refused; exactly one current successor |
+| Cleanup after the replacement race | — | loser's orphan deletable by its uploader (1); winner's file not deletable (0) |
+
+Plus: minimal grants (EXECUTE only `authenticated` + owner; no PUBLIC/anon/service_role; no USAGE on
+`mrv_private`); direct call refused; revoked EXECUTE breaks the DELETE (querying-user evaluation); definer body
+locks without caller UPDATE; REPEATABLE READ delete refused; user B cannot delete A's orphan in either flow.
+
+### B. PGlite (single connection, sequential only — `tests/mrv/dbHarness.ts`, 76/76)
+
+Applies 0001–0006 verbatim, then 0007 verbatim mid-run, under `authenticated` with per-user JWT claims:
+0006 replacement refused with 23503 (bug reproduced) and stores nothing; 0007 → version 7, the same replacement
+succeeds with history preserved; stale replacement and cross-reference replacement refused; **new:** registration
+refuses a missing file and another user's file, storing nothing; row UPDATE/DELETE refused; tenant isolation; the
+delete-policy cases (owner-scoped, orphan cleanup, registered file survives, imports untouchable) now go through the
+mirrored `protect_delete` trigger with the Storage API flag. PGlite proves SQL semantics, **not** concurrency.
+
+Pure self-test 41/41; TypeScript check green.
+
+### C. Real Supabase Storage API — NOT validated
+
+0007 is not applied remotely, so nothing above exercised the hosted Storage API, PostgREST or the live
+`storage.objects`. Both delete flows in A are models of the Storage API's SQL, not the service itself. Live checks
+performed were read-only catalogue queries (owners, `rolbypassrls`, schema/table privileges, triggers, policies,
+bucket versioning). Hosted validation requires applying 0007 to the designated test database and re-running the
+hosted suite (below).
 
 ## Applying 0007 to the designated test database (when authorised)
 
 1. Inspect `db/supabase/0007_evidence_replacement_order.sql`: one `create or replace function`
-   (`mrv_store_evidence_document`), one helper (`mrv_private.evidence_file_registered`), one marker
+   (`mrv_store_evidence_document`), one helper (`mrv_private.evidence_file_deletable(text, text)`), one marker
    (`public.mrv_schema_version`), one storage policy (`mrv_private_delete_evidence`), plus revoke/grant
    statements. No table, trigger, existing policy or data row is created, dropped or modified.
 2. Apply statement by statement via the SQL tool on `vbxvhbnhstdfbkgjuzgs` (test-classified, no live data).
@@ -103,7 +163,7 @@ Safe at any time — 0007 changes no data:
 
 ```sql
 drop policy if exists mrv_private_delete_evidence on storage.objects;
-drop function if exists mrv_private.evidence_file_registered(text);
+drop function if exists mrv_private.evidence_file_deletable(text, text);
 drop function if exists public.mrv_schema_version();
 create or replace function public.mrv_store_evidence_document(...)  -- restore the exact 0006 body
 ```

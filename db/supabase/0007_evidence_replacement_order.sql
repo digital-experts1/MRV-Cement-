@@ -6,8 +6,12 @@
 -- 'Request violates a data constraint' (23503). First (non-replacing) uploads were never affected.
 --
 -- Fix (this migration): insert the NEW document first, then retire the old one in the same transaction. The
--- transaction is still atomic — if anything fails, nothing is stored or retired. Additive: replaces the function
--- only; no table, trigger, policy, grant or data is changed.
+-- transaction is still atomic — if anything fails, nothing is stored or retired.
+--
+-- Second fix (upload-registration vs. deletion race, see the cleanup section below): before inserting metadata the
+-- RPC now locks the uploaded file's storage.objects row (FOR SHARE) and refuses if it is gone or belongs to another
+-- user. Additive: no existing table, trigger, grant or data is changed; one function is replaced, one helper, one
+-- Storage DELETE policy and one version marker are added.
 
 create or replace function public.mrv_store_evidence_document(p_tenant uuid, p_facility uuid, p_body text, p_auth jsonb)
 returns uuid language plpgsql security definer set search_path = '' as $$
@@ -20,6 +24,8 @@ declare
   v_old public.evidence_document;
   v_path text;
   v_prefix text;
+  v_obj uuid;
+  v_obj_owner text;
 begin
   v_key := mrv_private.verify_executor('evidence', p_tenant, p_facility, p_body, p_auth);
   if not mrv_auth.has_permission(p_tenant, p_facility, 'upload.create') then
@@ -66,6 +72,26 @@ begin
     end if;
   end if;
 
+  -- Pin the uploaded file (upload-registration vs. deletion race). The FOR SHARE row lock conflicts with every
+  -- DELETE of that storage.objects row:
+  --   * deletion first: a delete in progress holds the row lock, so this waits; when the delete commits, READ
+  --     COMMITTED re-checks the row, finds it gone, and the registration is refused — no metadata can reference a
+  --     deleted file;
+  --   * registration first: once this lock is held, any delete must wait for this transaction; after the commit the
+  --     delete policy's helper (mrv_private.evidence_file_deletable) sees the committed metadata and refuses.
+  -- This body runs as the function OWNER (SECURITY DEFINER; RLS-exempt owner role with UPDATE on storage.objects,
+  -- which FOR SHARE requires) — not with the caller's grants.
+  select o.id, coalesce(o.owner_id, o.owner::text) into v_obj, v_obj_owner
+    from storage.objects o
+    where o.bucket_id = 'mrv-private' and o.name = v_path
+    for share;
+  if v_obj is null then
+    raise exception 'the uploaded file was not found; nothing was stored' using errcode = '22023';
+  end if;
+  if v_obj_owner is distinct from v_uid::text then
+    raise exception 'the uploaded file belongs to another user' using errcode = '42501';
+  end if;
+
   insert into public.evidence_document (id, tenant_id, facility_id, evidence_id, category, coverage_start, coverage_end,
     filename, mime, size_bytes, sha256, storage_path, uploaded_by)
   values (v_id, p_tenant, p_facility, btrim(b->>'evidence_id'), nullif(btrim(b->>'category'), ''),
@@ -92,24 +118,55 @@ grant execute on function public.mrv_store_evidence_document(uuid, uuid, text, j
 -- orphaned private file that the application server must be able to remove again.
 --
 -- The policy below is the NARROWEST possible delete right, all conditions required at once:
---   * mrv-private bucket, and only under an evidence/… folder of the caller's own facility (foldername checks);
+--   * mrv-private bucket, and only under an evidence/… folder (foldername checks);
 --   * the caller holds upload.create in that facility (mrv_auth.has_permission — tenant/facility scoped);
 --   * the caller is the file's own uploader (storage.objects.owner = auth.uid() — another user's pending upload,
 --     even an authorized colleague's, can never be deleted);
---   * NO evidence_document row references the path (checked by the SECURITY DEFINER helper below, so row-level
---     visibility can never hide a registered file) — a stored document's file stays immutable.
+--   * the file is NOT referenced by evidence metadata, decided by mrv_private.evidence_file_deletable AFTER it has
+--     locked the object row (see below) — a stored document's file stays immutable.
 --
--- Residual race, accepted and bounded: the uploader deleting their OWN in-flight file between their own upload and
--- their own metadata commit can only break their own in-flight RPC (self-inflicted; the RPC then reports the file as
--- missing). No cross-user path exists: another user's file is protected by the owner check, and any file that has
--- become metadata-referenced is protected by the existence check.
+-- Privilege model (two separate mechanisms — do not conflate them):
+--   * An RLS policy expression is evaluated with the privileges of the QUERYING role (here `authenticated`, carrying
+--     the user's JWT claims). Every function the expression calls must therefore be EXECUTE-able by that role, and
+--     auth.uid() is the caller. That is why the helper below is granted EXECUTE to `authenticated` — and to nobody
+--     else (service_role bypasses RLS and never evaluates this policy).
+--   * Schema USAGE is checked when a name is RESOLVED. The policy is parsed once, by the migration owner, and stored
+--     by object OID, so evaluating it needs no USAGE on mrv_private. `authenticated` keeps having NO USAGE on
+--     mrv_private, so it cannot call the helper by name (verified: 42501 permission denied for schema mrv_private).
+--   * The helper is SECURITY DEFINER: its BODY runs with its OWNER's privileges (RLS-exempt owner role), so the
+--     metadata lookup cannot be hidden by the caller's row visibility and the row lock does not need the caller to
+--     hold UPDATE on storage.objects. That is a property of the function, not of the policy.
+--
+-- Concurrency: the single serialization point is the storage.objects row lock.
+--   * The registration RPC share-locks the row before inserting metadata (see above).
+--   * The helper takes FOR UPDATE on the same row BEFORE looking for metadata. If a registration holds the share
+--     lock, the helper waits; because the helper is VOLATILE PL/pgSQL, its next statement takes a fresh READ
+--     COMMITTED snapshot and sees the committed metadata → deletion refused (0 rows, file retained).
+--   * A plain STABLE check (the pre-fix version) used the DELETE statement's snapshot, could not see an in-flight
+--     registration, and was never re-evaluated after the lock wait: both transactions committed and the metadata
+--     referenced a deleted file. Reproduced in tests/mrv/concurrencyHarness.ts.
+--   * Under REPEATABLE READ / SERIALIZABLE the fresh-snapshot argument does not hold, so the helper fails closed
+--     (refuses) unless the deleting transaction is READ COMMITTED (the Storage API's default).
+--   * Both the direct-DELETE flow (policy evaluated during the scan) and the newer Storage API flow (superuser row
+--     lock first, then a caller-role DELETE probe) take this row lock before the metadata check, so there is one lock
+--     resource and no lock-order inversion.
+-- Assumes bucket versioning stays DISABLED for mrv-private (verified); a versioned delete writes markers instead.
 
-create or replace function mrv_private.evidence_file_registered(p_path text) returns boolean
-language sql stable security definer set search_path = '' as $$
-  select exists (select 1 from public.evidence_document d where d.storage_path = p_path);
-$$;
-revoke all on function mrv_private.evidence_file_registered(text) from public, anon;
-grant execute on function mrv_private.evidence_file_registered(text) to authenticated, service_role;
+create or replace function mrv_private.evidence_file_deletable(p_bucket text, p_name text) returns boolean
+language plpgsql volatile security definer set search_path = '' cost 10000 as $$
+begin
+  if current_setting('transaction_isolation') <> 'read committed' then
+    return false;
+  end if;
+  perform 1 from storage.objects o where o.bucket_id = p_bucket and o.name = p_name for update;
+  if not found then
+    return false;
+  end if;
+  -- New statement → new snapshot (READ COMMITTED, VOLATILE): sees a registration that committed while we waited.
+  return not exists (select 1 from public.evidence_document d where d.storage_path = p_name);
+end $$;
+revoke all on function mrv_private.evidence_file_deletable(text, text) from public, anon, service_role;
+grant execute on function mrv_private.evidence_file_deletable(text, text) to authenticated;
 
 create policy mrv_private_delete_evidence on storage.objects for delete to authenticated
   using (
@@ -118,7 +175,7 @@ create policy mrv_private_delete_evidence on storage.objects for delete to authe
     and (storage.foldername(name))[3] = 'evidence'
     and owner = auth.uid()
     and mrv_auth.has_permission(mrv_auth.try_uuid((storage.foldername(name))[1]), mrv_auth.try_uuid((storage.foldername(name))[2]), 'upload.create')
-    and not mrv_private.evidence_file_registered(name)
+    and mrv_private.evidence_file_deletable(bucket_id, name)
   );
 
 -- ───────────────────────── Schema version marker ─────────────────────────

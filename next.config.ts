@@ -15,8 +15,9 @@ const nextConfig: NextConfig = {
   },
   agentRules: false,
   allowedDevOrigins: ["localhost", "127.0.0.1"],
-  // PGlite ships a WASM Postgres build that must be loaded from node_modules, not bundled.
-  serverExternalPackages: ["@electric-sql/pglite"],
+  // PGlite ships a WASM Postgres build, and embedded-postgres (dev-only concurrency suite) native binaries; both must be
+  // loaded from node_modules, not bundled.
+  serverExternalPackages: ["@electric-sql/pglite", "embedded-postgres", "pg"],
 };
 
 export default nextConfig;
