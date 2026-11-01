@@ -431,22 +431,51 @@ export async function runHostedCases(): Promise<HostedResult> {
     const schemaVersion = await A.db.rpc("mrv_schema_version");
     const mrv0007Applied = !schemaVersion.error && Number(schemaVersion.data ?? 0) >= 7;
     if (doc1 && mrv0007Applied) {
+      const evidenceFolders = async () => {
+        const l = await A.db.storage.from("mrv-private").list(`${t}/${e1}/evidence`, { limit: 1000 });
+        return (l.data ?? []).map((o) => o.name);
+      };
       const up2 = await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v2.pdf`, bytes: new Uint8Array([...PDF_BYTES.slice(0, 8), ...new Array(64).fill(0x43)]), evidenceId: EV_ID, category: "electricity", start: "2025-01-01", end: "2025-01-31", replace: doc1 });
       const docsAfterReplace = await listEvidenceDocuments(callerOf(A), t, e1);
       const oldDoc = docsAfterReplace.find((d) => d.id === doc1);
       const newDoc = docsAfterReplace.find((d) => d.id === up2.documentId);
       check("replacement keeps history: v1 retired and superseded, v2 current", !!oldDoc && !oldDoc.isCurrent && oldDoc.supersededBy === up2.documentId && !!newDoc?.isCurrent, { oldDoc, newDoc });
       let staleReplaceErr = "";
+      const foldersBeforeStale = await evidenceFolders();
       try {
         await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v3.pdf`, bytes: PDF_BYTES, evidenceId: EV_ID, replace: doc1 });
       } catch (e) {
         staleReplaceErr = e instanceof Error ? e.message : String(e);
       }
       check("replacing an already-replaced document is refused", /no longer current/.test(staleReplaceErr), staleReplaceErr);
+      // Race-relevant API behaviour, unregistered side: the refused write uploaded a file first; the service's
+      // cleanup must have removed it again through the real Storage API (delete policy allows the uploader's own
+      // unregistered file). No new evidence folder may remain.
+      const foldersAfterStale = await evidenceFolders();
+      check(
+        "failed-upload cleanup removes the refused replacement's file through the real Storage API (no new evidence folder)",
+        foldersAfterStale.length === foldersBeforeStale.length && foldersAfterStale.every((n) => foldersBeforeStale.includes(n)),
+        { before: foldersBeforeStale.length, after: foldersAfterStale.length, added: foldersAfterStale.filter((n) => !foldersBeforeStale.includes(n)) }
+      );
+      // Race-relevant API behaviour, registered side: a metadata-referenced file must be undeletable even by its
+      // own uploader, through the real Storage API. RLS-refused deletes return success with zero objects removed,
+      // so the retained bytes are the proof. (The committed interleaving itself cannot be forced from a client; it
+      // is proven with separate concurrent transactions in tests/mrv/concurrencyHarness.ts.)
+      const v1Path = ((await A.db.from("evidence_document").select("storage_path").eq("id", doc1).single()).data as { storage_path: string } | null)?.storage_path ?? null;
+      const rmRegistered = v1Path ? await A.db.storage.from("mrv-private").remove([v1Path]) : null;
+      const dlRegistered = v1Path ? await A.db.storage.from("mrv-private").download(v1Path) : null;
+      const dlBytes = dlRegistered && !dlRegistered.error ? (await dlRegistered.data!.text()).length : -1;
+      check(
+        "a registered file is refused a direct Storage-API delete by its own uploader (0 objects removed, bytes retained)",
+        !!v1Path && !rmRegistered?.error && (rmRegistered?.data ?? []).length === 0 && !!dlRegistered && !dlRegistered.error && dlBytes > 0,
+        { removed: rmRegistered?.data ?? null, rmErr: errText(rmRegistered?.error), downloadErr: errText(dlRegistered?.error), bytes: dlBytes }
+      );
     } else {
       const why = !doc1 ? "skipped: upload failed" : "skipped: db/supabase/0007 is not applied (avoids creating orphaned private files)";
       check("replacement keeps history: v1 retired and superseded, v2 current", false, why);
       check("replacing an already-replaced document is refused", false, why);
+      check("failed-upload cleanup removes the refused replacement's file through the real Storage API (no new evidence folder)", false, why);
+      check("a registered file is refused a direct Storage-API delete by its own uploader (0 objects removed, bytes retained)", false, why);
     }
     const evFolders = await A.db.storage.from("mrv-private").list(`${t}/${e1}/evidence`, { limit: 1000 });
     const evStoredIds = new Set(((await A.db.from("evidence_document").select("id").eq("tenant_id", t).eq("facility_id", e1)).data ?? []).map((r) => r.id as string));
