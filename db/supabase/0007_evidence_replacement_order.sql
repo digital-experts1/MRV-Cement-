@@ -1,12 +1,13 @@
 -- 0007_evidence_replacement_order — fix the replacement order inside mrv_store_evidence_document
 --
--- Bug in 0006: the RPC retired the previous document (setting superseded_by = <new id>) BEFORE inserting the new
--- document row. The evidence_document_superseded_by_fkey foreign key (not deferrable) therefore pointed at a row
--- that did not exist yet, and every replacement failed with 'Request violates a data constraint'.
+-- Bug in 0006 (CONFIRMED live and reproduced on real PostgreSQL): the RPC retired the previous document
+-- (update … superseded_by = <new id>) BEFORE inserting the new document row. The evidence_document_superseded_by_fkey
+-- foreign key (not deferrable) therefore pointed at a row that did not exist yet, and every replacement failed with
+-- 'Request violates a data constraint' (23503). First (non-replacing) uploads were never affected.
 --
 -- Fix (this migration): insert the NEW document first, then retire the old one in the same transaction. The
 -- transaction is still atomic — if anything fails, nothing is stored or retired. Additive: replaces the function
--- only; no table, policy, trigger or data is changed.
+-- only; no table, trigger, policy, grant or data is changed.
 
 create or replace function public.mrv_store_evidence_document(p_tenant uuid, p_facility uuid, p_body text, p_auth jsonb)
 returns uuid language plpgsql security definer set search_path = '' as $$
@@ -48,7 +49,7 @@ begin
   end if;
   perform pg_advisory_xact_lock(hashtextextended(p_facility::text, 0));
 
-  -- Replacement: the current document of the SAME evidence reference is retired after the new row exists.
+  -- Replacement: lock and re-validate the current document of the SAME evidence reference.
   v_replaces := mrv_auth.try_uuid(b->>'replaces');
   if coalesce(b->>'replaces', '') <> '' and v_replaces is null then
     raise exception 'invalid evidence document body' using errcode = '22023';
@@ -71,6 +72,7 @@ begin
     nullif(b->>'coverage_start', '')::date, nullif(b->>'coverage_end', '')::date,
     btrim(b->>'filename'), b->>'mime', (b->>'size_bytes')::bigint, b->>'sha256', v_path, v_uid);
 
+  -- Retire the previous document AFTER the new row exists, so superseded_by always references a present row.
   if v_replaces is not null then
     update public.evidence_document set is_current = false, superseded_by = v_id where id = v_old.id;
   end if;
@@ -86,11 +88,21 @@ grant execute on function public.mrv_store_evidence_document(uuid, uuid, text, j
 
 -- ───────────────────────── Orphaned evidence file cleanup ─────────────────────────
 -- 0002 deliberately gives `mrv-private` no delete policy (uploads are immutable through the API). Evidence uploads
--- are the one exception where the application must clean up: the file is stored BEFORE the trusted-executor
--- metadata write, so a rejected write leaves an orphaned private file. This narrowly-scoped policy allows deletion
--- ONLY of evidence-path files that have NO evidence_document row (the helper is SECURITY DEFINER, so the existence
--- check ignores row visibility): a stored document's file stays immutable; an orphan can always be removed by a
--- member with upload.create in that facility.
+-- are the one flow that stores the file BEFORE the trusted-executor metadata write, so a rejected write leaves an
+-- orphaned private file that the application server must be able to remove again.
+--
+-- The policy below is the NARROWEST possible delete right, all conditions required at once:
+--   * mrv-private bucket, and only under an evidence/… folder of the caller's own facility (foldername checks);
+--   * the caller holds upload.create in that facility (mrv_auth.has_permission — tenant/facility scoped);
+--   * the caller is the file's own uploader (storage.objects.owner = auth.uid() — another user's pending upload,
+--     even an authorized colleague's, can never be deleted);
+--   * NO evidence_document row references the path (checked by the SECURITY DEFINER helper below, so row-level
+--     visibility can never hide a registered file) — a stored document's file stays immutable.
+--
+-- Residual race, accepted and bounded: the uploader deleting their OWN in-flight file between their own upload and
+-- their own metadata commit can only break their own in-flight RPC (self-inflicted; the RPC then reports the file as
+-- missing). No cross-user path exists: another user's file is protected by the owner check, and any file that has
+-- become metadata-referenced is protected by the existence check.
 
 create or replace function mrv_private.evidence_file_registered(p_path text) returns boolean
 language sql stable security definer set search_path = '' as $$
@@ -104,6 +116,16 @@ create policy mrv_private_delete_evidence on storage.objects for delete to authe
     bucket_id = 'mrv-private'
     and array_length(storage.foldername(name), 1) >= 3
     and (storage.foldername(name))[3] = 'evidence'
+    and owner = auth.uid()
     and mrv_auth.has_permission(mrv_auth.try_uuid((storage.foldername(name))[1]), mrv_auth.try_uuid((storage.foldername(name))[2]), 'upload.create')
     and not mrv_private.evidence_file_registered(name)
   );
+
+-- ───────────────────────── Schema version marker ─────────────────────────
+-- Single callable marker for "which migration batch is applied" (7 = 0007). The hosted suite uses it to skip
+-- replacement attempts while 0007 is absent — a refused replacement uploads the file before the metadata write
+-- fails, and without the delete policy above that leaks an orphaned private file.
+create or replace function public.mrv_schema_version() returns int
+language sql immutable as $$ select 7 $$;
+revoke all on function public.mrv_schema_version() from public, anon;
+grant execute on function public.mrv_schema_version() to authenticated, service_role;

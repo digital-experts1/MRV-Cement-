@@ -36,12 +36,13 @@ create function auth.uid() returns uuid language sql stable as $$ select nullif(
 grant usage on schema auth to anon, authenticated, service_role;
 create schema storage;
 create table storage.buckets (id text primary key, name text, public boolean, file_size_limit bigint);
-create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text);
+create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text, owner uuid, created_at timestamptz not null default now());
 alter table storage.objects enable row level security;
 create function storage.foldername(name text) returns text[] language sql immutable as $$
   select (string_to_array(name, '/'))[1:array_length(string_to_array(name, '/'), 1) - 1] $$;
 grant usage on schema storage to authenticated;
-grant select, insert on storage.objects to authenticated;
+-- Supabase grants DELETE to authenticated on storage.objects too; RLS (not grants) is the gate.
+grant select, insert, delete on storage.objects to authenticated;
 `;
 
 const MONTHLY: ImportMapping = { version: MAPPING_VERSION, interval: "calendar_month_of_date" };
@@ -67,8 +68,8 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
   await pg.waitReady;
   try {
     await pg.exec(SHIM);
-    for (const f of ["0001_mrv_persistence.sql", "0002_mrv_rpc_storage.sql", "0003_mrv_trusted_execution.sql", "0005_dataset_archive.sql"]) await pg.exec(sqlFile(f));
-    check("migrations 0001–0005 apply on PostgreSQL", true);
+    for (const f of ["0001_mrv_persistence.sql", "0002_mrv_rpc_storage.sql", "0003_mrv_trusted_execution.sql", "0005_dataset_archive.sql", "0006_evidence_documents.sql"]) await pg.exec(sqlFile(f));
+    check("migrations 0001–0006 apply on PostgreSQL", true);
     for (const [k, id] of Object.entries(USERS)) await pg.query("insert into auth.users (id, email) values ($1, $2)", [id, `${k.toLowerCase()}@synthetic.test`]);
     const keyRow = (await pg.query<{ key_id: string; hex: string }>("select key_id, encode(secret, 'hex') as hex from mrv_private.executor_key where active")).rows[0];
     const KEY: ExecutorKey = { keyId: keyRow.key_id, secret: Buffer.from(keyRow.hex, "hex") };
@@ -443,6 +444,113 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     const cutoffRow = await one<{ cutoff: string }>("select cutoff::text from public.dataset_archive where facility_id = $1", [fA2]);
     const preRun = await one<{ created_at: string }>("select created_at::text from public.calculation_run where id = $1", [preArchive.id]);
     check("pre-archive run predates the cutoff: history only (excluded from latest selection by the service filter)", preRun.created_at < cutoffRow.cutoff, { preRun: preRun.created_at, cutoff: cutoffRow.cutoff });
+
+    // ── 12. Evidence documents: 0006 replacement bug reproduced, 0007 fixes it, immutability, isolation, cleanup ──
+    const evidenceDocBody = (id: string, evidenceId: string, path: string, replaces?: string) =>
+      JSON.stringify({
+        id, evidence_id: evidenceId, category: "electricity", coverage_start: "2025-01-01", coverage_end: "2025-01-31",
+        filename: `document-${id.slice(0, 8)}.pdf`, mime: "application/pdf", size_bytes: 4096, sha256: "a".repeat(64), storage_path: path, replaces: replaces ?? null,
+      });
+    const ev1 = crypto.randomUUID();
+    const ev1Path = `${tA}/${fA1}/evidence/${ev1}/v1.pdf`;
+    await as(USERS.A);
+    await pg.query("insert into storage.objects (bucket_id, name, owner) values ('mrv-private', $1, $2)", [ev1Path, USERS.A]);
+    const doc1 = await rpc<string>(USERS.A, "mrv_store_evidence_document", "evidence", tA, fA1, evidenceDocBody(ev1, "EV-1", ev1Path));
+    check("first evidence document stored through the trusted executor (current)", doc1 === ev1, doc1);
+
+    // (a) 0006's defect, reproduced on real PostgreSQL BEFORE the fix: the retirement references the new row
+    // before it exists, so the non-deferrable superseded_by FK refuses the whole statement.
+    const ev2 = crypto.randomUUID();
+    const ev2Path = `${tA}/${fA1}/evidence/${ev2}/v2.pdf`;
+    await pg.query("insert into storage.objects (bucket_id, name, owner) values ('mrv-private', $1, $2)", [ev2Path, USERS.A]);
+    const eBug = await err(() => rpc<string>(USERS.A, "mrv_store_evidence_document", "evidence", tA, fA1, evidenceDocBody(ev2, "EV-1", ev2Path, ev1)));
+    check("0006 replacement refused by the superseded_by FK (bug reproduced before the fix)", !!eBug && eBug.startsWith("23503"), eBug);
+    await as(USERS.A);
+    const afterBug = await one<{ n: number; cur: boolean }>(
+      "select (select count(*)::int from public.evidence_document where id = $1) as n, (select is_current from public.evidence_document where id = $2) as cur",
+      [ev2, ev1]
+    );
+    check("the refused replacement stored nothing and left v1 current (statement-level rollback)", afterBug.n === 0 && afterBug.cur === true, afterBug);
+
+    // (b) Apply 0007 verbatim, then repeat the SAME replacement: insert-before-retire keeps the FK satisfied.
+    await su(); // migrations apply as the database owner, exactly like the initial 0001–0006 batch
+    await pg.exec(sqlFile("0007_evidence_replacement_order.sql"));
+    await as(USERS.A);
+    const schemaVersion = await one<{ v: number }>("select public.mrv_schema_version() as v");
+    check("0007 applies on PostgreSQL and reports schema version 7", schemaVersion.v === 7, schemaVersion);
+    const doc2 = await rpc<string>(USERS.A, "mrv_store_evidence_document", "evidence", tA, fA1, evidenceDocBody(ev2, "EV-1", ev2Path, ev1));
+    const history = await one<{ cur1: boolean; sup1: string | null; cur2: boolean }>(
+      "select (select is_current from public.evidence_document where id = $1) as cur1, (select superseded_by from public.evidence_document where id = $1) as sup1, (select is_current from public.evidence_document where id = $2) as cur2",
+      [ev1, ev2]
+    );
+    check("0007 applied: replacement succeeds — v1 retired and superseded, v2 current, history preserved", doc2 === ev2 && history.cur1 === false && history.sup1 === ev2 && history.cur2 === true, history);
+
+    // (c) Stale replacement (the retirement already happened) is refused atomically.
+    const ev3 = crypto.randomUUID();
+    const eStale = await err(() => rpc<string>(USERS.A, "mrv_store_evidence_document", "evidence", tA, fA1, evidenceDocBody(ev3, "EV-1", `${tA}/${fA1}/evidence/${ev3}/v3.pdf`, ev1)));
+    check("replacing an already-replaced document is refused (no longer current)", !!eStale && eStale.startsWith("22023") && /no longer current/.test(eStale), eStale);
+    await as(USERS.A);
+    const ev3Rows = Number((await one<{ n: number }>("select count(*)::int as n from public.evidence_document where id = $1", [ev3])).n);
+    check("the refused stale replacement stored nothing", ev3Rows === 0, { ev3Rows });
+
+    // (d) A replacement must keep the same evidence reference — refused before anything is stored.
+    const ev4 = crypto.randomUUID();
+    const eRef = await err(() => rpc<string>(USERS.A, "mrv_store_evidence_document", "evidence", tA, fA1, evidenceDocBody(ev4, "EV-2", `${tA}/${fA1}/evidence/${ev4}/v4.pdf`, ev2)));
+    check("replacement across a different evidence reference is refused", !!eRef && eRef.startsWith("22023") && /same evidence reference/.test(eRef), eRef);
+
+    // (e) Rows are immutable for the application role (SELECT-only grant) and undeletable.
+    await as(USERS.A);
+    const eUpd = await err(() => pg.query("update public.evidence_document set filename = 'x' where id = $1", [ev1]));
+    const eDel = await err(() => pg.query("delete from public.evidence_document where id = $1", [ev1]));
+    check("direct authenticated UPDATE/DELETE of a document row is refused", !!eUpd && eUpd.startsWith("42501") && !!eDel && eDel.startsWith("42501"), { eUpd, eDel });
+
+    // (f) Cross-tenant isolation: B sees none of A's documents and cannot store one into A's factory.
+    await as(USERS.B);
+    const bDocs = Number((await one<{ n: number }>("select count(*)::int as n from public.evidence_document where tenant_id = $1", [tA])).n);
+    const eBStore = await err(() => rpc<string>(USERS.B, "mrv_store_evidence_document", "evidence", tA, fA1, evidenceDocBody(crypto.randomUUID(), "EV-1", `${tA}/${fA1}/evidence/${crypto.randomUUID()}/b.pdf`)));
+    check("B reads none of A's evidence documents and cannot store one into A's factory", bDocs === 0 && !!eBStore && eBStore.startsWith("42501"), { bDocs, eBStore });
+
+    // (g) 0007's Storage delete policy — exactly the narrow cleanup right, nothing wider. RLS does not raise errors
+    // on refused DELETEs: it silently affects 0 rows, so every case asserts the row count and the object's survival.
+    await su();
+    // C is a facility_manager of A1 (upload.create) — its pending upload is protected from A by the owner check.
+    await pg.query("insert into public.role_assignment (tenant_id, membership_id, role, facility_id, granted_by) values ($1, $2, 'facility_manager', $3, $4)", [tA, memC, fA1, USERS.A]);
+    const delObj = async (uid: string, path: string) => {
+      await as(uid);
+      let err: string | null = null;
+      try {
+        await pg.query("delete from storage.objects where name = $1", [path]);
+      } catch (e) {
+        const x = e as { code?: string; message?: string };
+        err = `${x.code ?? "?"}: ${x.message ?? String(e)}`;
+      }
+      // RLS never raises on a refused DELETE — it silently affects 0 rows — so the object's survival is the proof.
+      const exists = await objectExists(path);
+      return { err, exists };
+    };
+    const objectExists = async (path: string) => {
+      await su();
+      return Number((await one<{ n: number }>("select count(*)::int as n from storage.objects where name = $1", [path])).n) === 1;
+    };
+    const pendingPath = `${tA}/${fA1}/evidence/${crypto.randomUUID()}/pending.pdf`;
+    await as(USERS.C);
+    const cIns = await err(() => pg.query("insert into storage.objects (bucket_id, name, owner) values ('mrv-private', $1, $2)", [pendingPath, USERS.C]));
+    check("C (facility_manager, upload.create) can upload into A's evidence path", cIns === null, cIns);
+    const dPending = await delObj(USERS.A, pendingPath);
+    check("A cannot delete C's pending upload (owner-scoped policy)", dPending.err === null && dPending.exists, dPending);
+    const dOwn = await delObj(USERS.C, pendingPath);
+    check("the uploader C can remove their own pending (unregistered) file", dOwn.err === null && !dOwn.exists, dOwn);
+    const aOrphanPath = `${tA}/${fA1}/evidence/${crypto.randomUUID()}/orphan.pdf`;
+    await as(USERS.A);
+    await pg.query("insert into storage.objects (bucket_id, name, owner) values ('mrv-private', $1, $2)", [aOrphanPath, USERS.A]);
+    const dOrphan = await delObj(USERS.A, aOrphanPath);
+    check("the uploader can remove their own ORPHANED evidence file (failed-upload cleanup)", dOrphan.err === null && !dOrphan.exists, dOrphan);
+    const dRegistered = await delObj(USERS.A, ev2Path);
+    check("a file referenced by evidence metadata cannot be deleted — even by its own uploader", dRegistered.err === null && dRegistered.exists, dRegistered);
+    const importsPath = `${tA}/${fA1}/imports/x/synthetic.xlsx`;
+    const dImports = await delObj(USERS.A, importsPath);
+    check("non-evidence private files (imports) cannot be deleted by the application role", dImports.err === null && dImports.exists, dImports);
+
   } catch (e) {
     check("harness completed without unexpected error", false, e instanceof Error ? `${(e as { code?: string }).code ?? ""} ${e.message}` : String(e));
   } finally {

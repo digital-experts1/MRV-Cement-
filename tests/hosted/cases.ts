@@ -424,34 +424,29 @@ export async function runHostedCases(): Promise<HostedResult> {
     const evTamperRows = await A.db.from("evidence_document").select("id", { count: "exact", head: true }).eq("id", tamperId);
     check("no metadata row was created by any tampering attempt", (evTamperRows.count ?? 0) === 0, { n: evTamperRows.count });
 
-    // (e) Replacement history + failed-upload cleanup.
-    if (doc1) {
-      let up2Id = "";
+    // (e) Replacement history + failed-upload cleanup. Until db/supabase/0007_evidence_replacement_order.sql is
+    // applied, a replacement is refused by the superseded_by FK AFTER the file was already uploaded — and without
+    // 0007's delete policy the cleanup cannot remove it. Skip the attempt entirely instead of leaking another
+    // orphaned private file; mrv_schema_version() (created by 0007) is the applied/not-applied marker.
+    const schemaVersion = await A.db.rpc("mrv_schema_version");
+    const mrv0007Applied = !schemaVersion.error && Number(schemaVersion.data ?? 0) >= 7;
+    if (doc1 && mrv0007Applied) {
+      const up2 = await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v2.pdf`, bytes: new Uint8Array([...PDF_BYTES.slice(0, 8), ...new Array(64).fill(0x43)]), evidenceId: EV_ID, category: "electricity", start: "2025-01-01", end: "2025-01-31", replace: doc1 });
+      const docsAfterReplace = await listEvidenceDocuments(callerOf(A), t, e1);
+      const oldDoc = docsAfterReplace.find((d) => d.id === doc1);
+      const newDoc = docsAfterReplace.find((d) => d.id === up2.documentId);
+      check("replacement keeps history: v1 retired and superseded, v2 current", !!oldDoc && !oldDoc.isCurrent && oldDoc.supersededBy === up2.documentId && !!newDoc?.isCurrent, { oldDoc, newDoc });
+      let staleReplaceErr = "";
       try {
-        const up2 = await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v2.pdf`, bytes: new Uint8Array([...PDF_BYTES.slice(0, 8), ...new Array(64).fill(0x43)]), evidenceId: EV_ID, category: "electricity", start: "2025-01-01", end: "2025-01-31", replace: doc1 });
-        up2Id = up2.documentId;
+        await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v3.pdf`, bytes: PDF_BYTES, evidenceId: EV_ID, replace: doc1 });
       } catch (e) {
-        // Expected to fail until db/supabase/0007_evidence_replacement_order.sql is applied (not applied during syncs).
-        check("replacement keeps history: v1 retired and superseded, v2 current", false, `replacement upload failed: ${e instanceof Error ? e.message : String(e)}`);
+        staleReplaceErr = e instanceof Error ? e.message : String(e);
       }
-      if (up2Id) {
-        const docsAfterReplace = await listEvidenceDocuments(callerOf(A), t, e1);
-        const oldDoc = docsAfterReplace.find((d) => d.id === doc1);
-        const newDoc = docsAfterReplace.find((d) => d.id === up2Id);
-        check("replacement keeps history: v1 retired and superseded, v2 current", !!oldDoc && !oldDoc.isCurrent && oldDoc.supersededBy === up2Id && !!newDoc?.isCurrent, { oldDoc, newDoc });
-        let staleReplaceErr = "";
-        try {
-          await uploadEvidenceDocument(callerOf(A), t, e1, { filename: `hosted-evidence-${EV_ID}-v3.pdf`, bytes: PDF_BYTES, evidenceId: EV_ID, replace: doc1 });
-        } catch (e) {
-          staleReplaceErr = e instanceof Error ? e.message : String(e);
-        }
-        check("replacing an already-replaced document is refused", /no longer current/.test(staleReplaceErr), staleReplaceErr);
-      } else {
-        check("replacing an already-replaced document is refused", false, "skipped: replacement upload failed");
-      }
+      check("replacing an already-replaced document is refused", /no longer current/.test(staleReplaceErr), staleReplaceErr);
     } else {
-      check("replacement keeps history: v1 retired and superseded, v2 current", false, "skipped: upload failed");
-      check("replacing an already-replaced document is refused", false, "skipped: upload failed");
+      const why = !doc1 ? "skipped: upload failed" : "skipped: db/supabase/0007 is not applied (avoids creating orphaned private files)";
+      check("replacement keeps history: v1 retired and superseded, v2 current", false, why);
+      check("replacing an already-replaced document is refused", false, why);
     }
     const evFolders = await A.db.storage.from("mrv-private").list(`${t}/${e1}/evidence`, { limit: 1000 });
     const evStoredIds = new Set(((await A.db.from("evidence_document").select("id").eq("tenant_id", t).eq("facility_id", e1)).data ?? []).map((r) => r.id as string));
