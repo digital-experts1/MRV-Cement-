@@ -1453,3 +1453,16 @@
 .portfolio-totals dd { margin:8px 0 0; font-size:22px; font-weight:600; }
 .portfolio-totals details { margin-top:20px; }
 @media (max-width:760px) { .portfolio-summary, .portfolio-totals dl { grid-template-columns:repeat(2,1fr); } .portfolio-toolbar, .portfolio-chart-header { align-items:stretch; flex-direction:column; } }
+
+/* Factor workspace: compact review controls and full-width technical registers. */
+.factor-context { padding: 18px 22px; margin-bottom: 18px; background: var(--bg-card); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 6px; }
+.factor-context p { max-width: 80ch; margin: 6px 0; color: var(--text-secondary); line-height: 1.6; }
+.factor-review-strip { display:flex; flex-wrap:wrap; gap:24px; padding:12px 0 22px; }
+.factor-review-strip strong { font-size:22px; margin-right:6px; }
+.factor-toolbar { display:flex; flex-wrap:wrap; gap:16px; align-items:end; margin-bottom:20px; }
+.factor-toolbar nav { display:flex; flex-wrap:wrap; gap:8px; flex:1; }
+.factor-toolbar label { display:grid; gap:6px; font-weight:600; }
+.factor-toolbar .btn, .factor-toolbar input, .factor-toolbar select { min-height:44px; }
+.factor-context summary, .data-table details summary { cursor:pointer; padding:8px 0; }
+.factor-toolbar :focus-visible, .factor-context :focus-visible, .data-table summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+@media(max-width:640px) { .factor-toolbar, .factor-toolbar label { width:100%; } .factor-review-strip { gap:12px; } }

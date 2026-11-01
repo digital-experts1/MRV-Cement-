@@ -90,6 +90,15 @@ export default function DataEntryPage() {
   const draftKey = scopedDraftKey(active);
   const localWorkspace = active.tenantId === null;
   const [activeTab, setActiveTab] = useState<TabKey>("setup");
+  useEffect(() => {
+    const openSection = () => {
+      const section = window.location.hash.slice(1);
+      if (["constants", "kilnfuel", "electricity"].includes(section)) setActiveTab(section as TabKey);
+    };
+    openSection();
+    window.addEventListener("hashchange", openSection);
+    return () => window.removeEventListener("hashchange", openSection);
+  }, []);
   const [formData, setFormData] = useState<MrvInput>(blankForm);
   const [baseRevision, setBaseRevision] = useState<string | null>(null);
   const [pendingDraft, setPendingDraft] = useState<{ draft: DraftRecord; reason: string } | null>(null);
@@ -727,7 +736,7 @@ export default function DataEntryPage() {
                       />
                     </td>
                     <td>{String(row.Unit || "")}</td>
-                    <td>{String(row["Source / rationale"] || "")}</td>
+                    <td><input className="table-input" aria-label={`${String(row["Constant / Factor"])} source rationale`} value={raw(row, "Source / rationale")} onChange={e => updateRow("constants", idx, "Source / rationale", e.target.value)} /><input className="table-input" type="url" placeholder="Source URL" aria-label={`${String(row["Constant / Factor"])} source URL`} value={raw(row, "Source URL")} onChange={e => updateRow("constants", idx, "Source URL", e.target.value)} /><input className="table-input" placeholder="Change rationale" aria-label={`${String(row["Constant / Factor"])} change control`} value={raw(row, "Change control")} onChange={e => updateRow("constants", idx, "Change control", e.target.value)} /></td>
                     <td>
                       <span className="badge badge-secondary" style={{ fontSize: 10.5 }}>
                         {String(row["Used in"] || "")}
