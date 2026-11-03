@@ -26,7 +26,12 @@ function TrendCanvas({ result, unit, bars, onSelect }: { result: ReturnType<type
       data: { labels: result.labels, datasets: result.series.map((series, index) => ({ ...series, borderColor: palette[index % palette.length], backgroundColor: palette[index % palette.length], borderWidth: bars ? 0 : 2, pointRadius: result.labels.length > 60 ? 1 : 3, pointHoverRadius: 6, tension: 0, spanGaps: false, maxBarThickness: 28 })) },
       options: { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
         onClick: (_event, elements) => { if (elements[0]) onSelect(elements[0].index); },
-        scales: { x: { ticks: { font, maxTicksLimit: 10, maxRotation: 0 }, grid: { display: false } }, y: { beginAtZero: true, title: { display: true, text: unit, font }, ticks: { font }, grid: { color: "#edf1f7" } } },
+        scales: { x: { ticks: { font, maxTicksLimit: 8, maxRotation: 0, callback: value => {
+          const label = result.labels[Number(value)] ?? "";
+          if (/^\d{4}-\d{2}$/.test(label)) return new Intl.DateTimeFormat("en", { month: "short", year: "2-digit", timeZone: "UTC" }).format(new Date(label + "-01T00:00:00Z"));
+          if (/^\d{4}-\d{2}-\d{2}$/.test(label)) return new Intl.DateTimeFormat("en", { day: "2-digit", month: "short", timeZone: "UTC" }).format(new Date(label + "T00:00:00Z"));
+          return label;
+        } }, grid: { display: false } }, y: { beginAtZero: true, title: { display: true, text: unit, font }, ticks: { font }, grid: { color: "#edf1f7" } } },
         plugins: { legend: { position: "bottom", labels: { font, usePointStyle: true, boxWidth: 8, padding: 20 } }, tooltip: { titleFont: font, bodyFont: font, backgroundColor: "#0f2747", padding: 12, callbacks: { label: ctx => `${ctx.dataset.label}: ${format(ctx.parsed.y)} ${unit}`, footer: () => "Click to inspect source readings" } } } }
     });
     return () => chart.destroy();
