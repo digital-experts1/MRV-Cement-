@@ -739,6 +739,56 @@ export async function runDbCases(): Promise<{ passed: number; total: number; che
     check("B's own organization is untouched, and A reads its access audit trail (tenant-level audit.read)",
       bOwn === 1 && ["access.invitation.accept", "access.invitation.create", "access.member.revoke", "access.role.grant", "access.role.revoke", "access.role.grant"].every((a) => audits.includes(a)), { bOwn, audits });
 
+
+    // Atomic onboarding, untrusted request fields and tenant isolation.
+    await su();
+    await pg.exec(sqlFile("0009_organization_onboarding.sql"));
+    const onboarding = { name: "New cement organization", country: "Egypt", organizationType: "Cement manufacturer",
+      registrationNumber: "TEST-ONLY", facilityCode: "new-01", facilityName: "New factory", timezone: "Africa/Cairo",
+      synthetic: true, start: "2026-01-01", end: "2026-12-31" };
+    const requestId = "99999999-0000-4000-8000-000000000001";
+    const onboard = (request: string, details: unknown) => one<{ t: string }>("select public.mrv_onboard_organization($1,$2::jsonb) as t", [request, JSON.stringify(details)]);
+    await as(USERS.A);
+    const newOrg = (await onboard(requestId, onboarding)).t;
+    const onboardingRetry = (await onboard(requestId, onboarding)).t;
+    const newFactory = (await one<{ id: string }>("select id from public.facility where tenant_id=$1", [newOrg])).id;
+    const pref = await one<{ tenant_id: string; facility_id: string; range: { start: string; end: string } }>("select tenant_id,facility_id,range from public.workspace_preference");
+    const profile = await one<{ profile: { country: string } }>("select profile from public.tenant where id=$1",[newOrg]);
+    check("onboarding retries return one organization; profile, first factory and initial preference persist atomically",
+      newOrg === onboardingRetry && pref.tenant_id === newOrg && pref.facility_id === newFactory && pref.range.start === onboarding.start && pref.range.end === onboarding.end && profile.profile.country === "Egypt");
+    check("new onboarding creates no readings or inherited evidence", Number((await one<{ n: number }>("select count(*)::int n from public.activity_reading where tenant_id=$1",[newOrg])).n) === 0);
+    const changedRetry = await err(() => onboard(requestId, { ...onboarding, name: "Changed request" }));
+    check("reusing an onboarding request with changed details is rejected", !!changedRetry?.startsWith("22023"), changedRetry);
+    for (const [label, details] of Object.entries({
+      forgedTenant: { ...onboarding, tenantId: tB }, forgedOwner: { ...onboarding, userId: USERS.B },
+      forgedRole: { ...onboarding, role: "platform_admin" }, invalidDate: { ...onboarding, end: "2025-01-01" },
+      invalidTimezone: { ...onboarding, timezone: "Unknown/Timezone" }, wrongBoolean: { ...onboarding, synthetic: "true" },
+      invalidFactory: { ...onboarding, facilityCode: "wrong code" }, missingCountry: { ...onboarding, country: null },
+    })) {
+      const rejection = await err(() => onboard("99999999-0000-4000-8000-000000000002", details));
+      check(`onboarding rejects ${label} at the database boundary`, !!rejection?.startsWith("22023"), rejection);
+    }
+    const deniedProfileWrite = await err(() => pg.query("update public.tenant set profile='{}' where id=$1",[newOrg]));
+    check("authenticated users cannot bypass onboarding to write tenant profiles", !!deniedProfileWrite?.startsWith("42501"), deniedProfileWrite);
+    await as(USERS.B);
+    check("another tenant cannot see the new organization profile, factory, members or audit trail",
+      Number((await one<{ n: number }>("select ((select count(*) from public.tenant where id=$1)+(select count(*) from public.facility where tenant_id=$1)+(select count(*) from public.tenant_membership where tenant_id=$1)+(select count(*) from public.audit_event where tenant_id=$1))::int n",[newOrg])).n) === 0);
+    const preferenceDenied = await err(() => pg.query("select public.mrv_save_preference($1,$2,'{}')",[newOrg,newFactory]));
+    check("another tenant cannot select the new factory through saved preferences", !!preferenceDenied?.startsWith("42501"), preferenceDenied);
+    const otherOrg = (await onboard(requestId,onboarding)).t;
+    check("same request UUID from another user creates only that user's separate organization", otherOrg !== newOrg);
+    const ledgerDenied = await err(() => pg.query("select * from mrv_private.onboarding_request"));
+    check("onboarding retry ledger is not exposed to authenticated callers", !!ledgerDenied?.startsWith("42501"), ledgerDenied);
+    await su();
+    await pg.query("update public.tenant_membership set status='revoked',revoked_at=now() where tenant_id=$1 and user_id=$2",[newOrg,USERS.A]);
+    await as(USERS.A);
+    const revokedRetry = await err(() => onboard(requestId,onboarding));
+    check("revoked membership cannot restore access through an onboarding retry", !!revokedRetry?.startsWith("42501"), revokedRetry);
+    await su();
+    await pg.exec("set role anon");
+    const anonymous = await err(() => onboard(requestId,onboarding));
+    check("anonymous users cannot call onboarding", !!anonymous?.startsWith("42501"), anonymous);
+
   } catch (e) {
     check("harness completed without unexpected error", false, e instanceof Error ? `${(e as { code?: string }).code ?? ""} ${e.message}` : String(e));
   } finally {

@@ -28,6 +28,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const shellClass = [collapsed ? "collapsed" : "", navOpen ? "nav-open" : ""].filter(Boolean).join(" ");
 
+  if (pathname === "/onboarding") return <main id="onboarding-content">{children}</main>;
+
   if (pathname === "/signin" || pathname === "/signup" || pathname === "/reset-password") {
     return <AuthLayout>{children}</AuthLayout>;
   }
