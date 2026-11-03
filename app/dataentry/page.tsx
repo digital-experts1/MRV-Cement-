@@ -95,7 +95,7 @@ export default function DataEntryPage() {
   useEffect(() => {
     const openSection = () => {
       const section = window.location.hash.slice(1);
-      if (["constants", "kilnfuel", "electricity", "regulatory"].includes(section)) setActiveTab(section as TabKey);
+      if (["constants", "kilnfuel", "electricity", "regulatory", "rawmaterial"].includes(section)) setActiveTab(section as TabKey);
     };
     openSection();
     window.addEventListener("hashchange", openSection);
