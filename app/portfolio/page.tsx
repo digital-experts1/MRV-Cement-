@@ -7,7 +7,7 @@ import { mrvFetch } from "@/lib/apiClient";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ScopeNotice } from "@/components/ui/ScopeNotice";
 import { Fmt } from "@/components/ui/Fmt";
-import { BarChart } from "@/components/charts/ChartCanvas";
+import { PortfolioPerformance } from "@/components/charts/PortfolioPerformance";
 import { PORTFOLIO_METRICS, portfolioIssues, portfolioSum, portfolioValue } from "@/lib/mrv/portfolio";
 import type { CalcResponse, RunView } from "@/lib/mrv/clientTypes";
 
@@ -30,7 +30,6 @@ function PortfolioContent({ tenantId, start, end }: { tenantId: string; start: s
   const [refresh, setRefresh] = useState(0);
   const [query, setQuery] = useState("");
   const [onlyIssues, setOnlyIssues] = useState(false);
-  const [metric, setMetric] = useState<string>("Direct Embedded CO2");
   const org = memberships.find(m => m.tenantId === tenantId);
   const authorized = useMemo(() => facilities.filter(f => f.permissions.includes("facility.read")), [facilities]);
 
@@ -70,8 +69,6 @@ function PortfolioContent({ tenantId, start, end }: { tenantId: string; start: s
   const current = rows.filter(r => r.view && !r.error && r.view.run.range_start === start && r.view.run.range_end === end && !r.view.run.stale && !r.view.run.archived && r.view.run.integrity.stored === "intact" && r.view.run.integrity.sameEngine && r.view.run.integrity.recomputeMatches);
   const ready = rows.filter(r => !issues(r).length);
   const visible = rows.filter(r => `${r.facility.name} ${r.facility.code}`.toLowerCase().includes(query.toLowerCase()) && (!onlyIssues || issues(r).length > 0));
-  const selectedMetric = PORTFOLIO_METRICS.find(m => m.key === metric)!;
-  const chartRows = visible.filter(r => current.includes(r) && portfolioValue(r.view, metric) !== null);
   const allComparable = rows.length > 0 && ready.length === rows.length && new Set(rows.map(r => r.facility.reporting_boundary)).size === 1 && new Set(rows.map(r => r.view?.run.methodology_version)).size === 1 && new Set(rows.map(r => r.view?.run.synthetic)).size === 1;
   const open = (r: FactoryResult) => { selectFacility(r.facility.id); router.push("/overview"); };
 
@@ -86,9 +83,10 @@ function PortfolioContent({ tenantId, start, end }: { tenantId: string; start: s
         <div><strong>{rows.length - ready.length}</strong><span>Need attention</span></div>
       </section>
       <div className="portfolio-toolbar"><label>Find a factory<input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Factory name or code" /></label><label className="portfolio-toggle"><input type="checkbox" checked={onlyIssues} onChange={e => setOnlyIssues(e.target.checked)} /> Show only factories needing attention</label></div>
-      <section className="chart-card portfolio-comparison"><div className="portfolio-chart-header"><div><h2>Compare factory performance</h2><p>Current saved results only. Incomplete inputs remain flagged in the table.</p></div><label>Metric<select value={metric} onChange={e => setMetric(e.target.value)}>{PORTFOLIO_METRICS.map(m => <option key={m.key} value={m.key}>{m.label} ({m.unit})</option>)}</select></label></div>
-        {chartRows.length ? <div role="img" aria-label={`${selectedMetric.label} by factory. Exact values and quality status are listed in the table below.`} className="portfolio-chart" style={{ height: Math.max(230, chartRows.length * 42) }}><BarChart horizontal labels={chartRows.map(r => `${r.facility.code} · ${r.facility.name}`)} datasets={[{ label: selectedMetric.label, data: chartRows.map(r => portfolioValue(r.view, metric)), color: "#1677ff" }]} yUnit={selectedMetric.unit} /></div> : <p className="portfolio-empty">No current numeric results match this view. Open a factory to calculate the selected period, or adjust your filters.</p>}
-      </section>
+      <PortfolioPerformance start={start} end={end} factories={visible.map(r => ({
+        id: r.facility.id, name: r.facility.name, code: r.facility.code, current: current.includes(r), issues: issues(r).length,
+        values: Object.fromEntries(PORTFOLIO_METRICS.map(m => [m.key, current.includes(r) ? portfolioValue(r.view, m.key) : null])),
+      }))} openFactory={id => { const row = visible.find(r => r.facility.id === id); if (row) open(row); }} />
       <section className="section-card"><div className="portfolio-chart-header"><h2>Factory results</h2><span>{visible.length} of {rows.length} factories</span></div><div className="table-wrapper"><table className="data-table"><caption className="portfolio-caption">Saved results for {start} — {end}. Missing values are not zero. Search filters affect the chart and table, not the portfolio summary.</caption><thead><tr><th>Factory / boundary</th><th>Period status</th>{PORTFOLIO_METRICS.map(m => <th key={m.key} className="num">{m.label}<br />{m.unit}</th>)}<th>Readings / quality</th><th>Action</th></tr></thead><tbody>{visible.map(r => <tr key={r.facility.id}><td><strong>{r.facility.name}</strong><br />{r.facility.code}<br />{r.facility.reporting_boundary}<br />{r.facility.timezone}{r.view?.run.synthetic && <><br /><span className="badge badge-info">Synthetic demo</span></>}</td><td>{issues(r).length ? <details><summary className="portfolio-attention">Needs attention ({issues(r).length})</summary><ul>{issues(r).map(issue => <li key={issue}>{issue}</li>)}</ul></details> : <span className="badge badge-success">Ready for internal review</span>}{r.view && <small>Calculated {new Date(r.view.run.created_at).toLocaleString()}</small>}</td>{PORTFOLIO_METRICS.map(m => <td key={m.key} className="num">{current.includes(r) ? <Fmt value={portfolioValue(r.view, m.key)} unit={m.unit} /> : "—"}</td>)}<td>{r.view ? <>{r.view.run.readings} readings<br />QA: {r.view.run.qa_overall}<br />Inputs: {r.view.store.completeness.pct}%<br />Evidence references: {r.view.store.evidence.length}<small>References are not external verification.</small></> : "No result"}</td><td><button className="btn btn-secondary" onClick={() => open(r)}>Open factory</button></td></tr>)}</tbody></table></div>{!visible.length && <p className="portfolio-empty">{rows.length ? "No factories match your filters." : "No factories are authorized for this account."}</p>}</section>
       <section className="section-card portfolio-totals"><h2>Factory sums</h2><p>All authorized factories, before inter-factory transfer reconciliation. These are management figures, not consolidated regulatory totals.</p>{allComparable ? <dl>{PORTFOLIO_METRICS.slice(0, 6).map(m => <div key={m.key}><dt>{m.label}</dt><dd><Fmt value={portfolioSum(rows.map(r => r.view!), m.key)} unit={m.unit} /> <small>{m.unit}</small></dd></div>)}</dl> : <p className="portfolio-attention">Sums withheld: every factory must have current results, complete coverage and inputs, internal-review readiness, matching methodology and reporting boundaries, and the same demo/real-data status.</p>}<details><summary>How to interpret this portfolio</summary><p>Factory intensities use each factory’s own calculation. They are never averaged. Group intensity is withheld until inter-factory transfers and product boundaries can be reconciled from persisted records. Reporting approval and external verification are separate from internal-review readiness.</p><p>Saved calculations are reused. Missing or outdated periods are calculated automatically where your permissions allow. Open a factory to resolve data issues or inspect its individual readings. Refresh afterwards.</p></details></section>
     </>}
