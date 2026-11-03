@@ -27,6 +27,7 @@ import { sha256Bytes } from "@/lib/mrv/sha";
 import { dbFail, fetchAll } from "./db";
 import { executorKey } from "./executor";
 import { isRole } from "@/lib/tenancy/permissions";
+import { parseOnboarding } from "@/lib/tenancy/onboarding";
 
 export interface FacilityView {
   id: string;
@@ -123,6 +124,15 @@ export async function createOrganization(caller: MrvCaller, body: Record<string,
   const { data, error } = await caller.db.rpc("mrv_create_organization", {
     p_name: name, p_facility_code: facilityCode, p_facility_name: facilityName, p_timezone: timezone, p_synthetic: synthetic === true,
   });
+  if (error) throw dbFail(error);
+  return { tenantId: data as string };
+}
+
+export async function onboardOrganization(caller: MrvCaller, body: Record<string, unknown>) {
+  let parsed: ReturnType<typeof parseOnboarding>;
+  try { parsed = parseOnboarding(body); }
+  catch (error) { throw badRequest(error instanceof Error ? error.message : "Invalid onboarding request"); }
+  const { data, error } = await caller.db.rpc("mrv_onboard_organization", { p_request: parsed.requestId, p_details: parsed.details });
   if (error) throw dbFail(error);
   return { tenantId: data as string };
 }

@@ -2,7 +2,7 @@ import { isAllowedRequestOrigin } from "@/lib/server/requestOrigin";
 import { badRequest, HttpError, notFound, unauthenticated } from "@/lib/server/authz/errors";
 import { authenticateRequest, type MrvCaller } from "@/lib/server/supabase/auth";
 import {
-  acceptInvitation, archiveDataset, calculateRange, createOrganization, evidenceDocumentUrl, facilitySummary, getMe, importDemo,
+  acceptInvitation, archiveDataset, calculateRange, createOrganization, onboardOrganization, evidenceDocumentUrl, facilitySummary, getMe, importDemo,
   importFile, importManual, invitationPreview, inviteMember, latestRun, listEvidenceDocuments, listEvidenceRegister,
   listFacilities, listImports, listInvitations, listMembers, listReportImpacts, listRuns, loadRun, readingHistory,
   revokeInvitation, revokeMemberAccess, savePreference, setMemberRole, uploadEvidenceDocument, withdrawReading,
@@ -36,6 +36,7 @@ const rangeFromQuery = (url: URL): unknown => {
 const routes: [string, string, Handler][] = [
   ["GET", "/me", ({ caller }) => getMe(caller)],
   ["POST", "/orgs", async ({ caller, body }) => createOrganization(caller, await body())],
+  ["POST", "/onboarding", async ({ caller, body }) => onboardOrganization(caller, await body())],
   ["PUT", "/preference", async ({ caller, body }) => savePreference(caller, await body())],
   ["GET", "/orgs/:t/facilities", ({ caller, params }) => listFacilities(caller, params.t)],
   ["GET", "/orgs/:t/facilities/:f/summary", ({ caller, params }) => facilitySummary(caller, params.t, params.f)],
