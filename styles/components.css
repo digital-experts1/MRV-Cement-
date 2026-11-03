@@ -1477,3 +1477,19 @@
 .reference-editor label { display:grid; gap:6px; }
 .reference-editor input { min-height:44px; }
 @media(max-width:760px) { .reg-register, .reference-editor { grid-template-columns:1fr; } }
+
+/* Import review: retain the workspace palette and make the decision readable. */
+#upload-prompt .upload-card-compact:has(.daily-import-preview) { width: min(calc(100% - 32px), 720px); max-width: 720px; }
+.upload-steps { display: flex; flex-wrap: wrap; gap: 8px 20px; list-style: none; padding: 0; margin: 12px 0; font-size: 12px; color: var(--text-muted); }
+.upload-steps [aria-current="step"] { color: var(--text-primary); font-weight: 700; }
+.upload-review-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 12px 0; }
+.upload-review-counts div { padding: 8px; border-bottom: 1px solid var(--border); }
+.upload-review-counts dt { text-transform: capitalize; font-size: 12px; }
+.upload-review-counts dd { margin: 4px 0 0; font-weight: 600; }
+.daily-import-preview > label { display: block; margin: 16px 0; font-size: 13px; line-height: 1.5; }
+.daily-import-preview .error-banner { text-align: left; }
+
+.upload-card .daily-import-preview p { max-width: none; }
+.daily-import-preview strong { overflow-wrap: anywhere; }
+
+.upload-card-compact #upload-dialog-desc .upload-target { max-width: none; }

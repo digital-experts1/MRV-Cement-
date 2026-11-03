@@ -46,7 +46,7 @@ const routes: [string, string, Handler][] = [
     async ({ caller, params, req, url }) => {
       const bytes = new Uint8Array(await req.arrayBuffer());
       if (!bytes.byteLength || bytes.byteLength > MAX_UPLOAD_BYTES) throw badRequest("Upload must be 1 byte – 20 MB");
-      return importFile(caller, params.t, params.f, { filename: url.searchParams.get("filename") ?? "upload.bin", bytes, mapping: url.searchParams.get("mapping"), format: url.searchParams.get("format") });
+      return importFile(caller, params.t, params.f, { filename: url.searchParams.get("filename") ?? "upload.bin", bytes, mapping: url.searchParams.get("mapping"), format: url.searchParams.get("format"), preview: url.searchParams.get("preview") === "true" });
     },
   ],
   [

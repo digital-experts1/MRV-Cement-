@@ -15,7 +15,7 @@ import { createEmptyInput, type DataOrigin, type MrvInput, type RowSource, type 
 import { badRequest, forbidden, HttpError, isUuid, notFound } from "@/lib/server/authz/errors";
 import { PRIVATE_BUCKET } from "@/integrations/supabase/client";
 import type { MrvCaller } from "@/lib/server/supabase/auth";
-import { addDays, isValidTimezone, resolveRange, validateSpec, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
+import { addDays, daysBetweenInclusive, isValidTimezone, resolveRange, validateSpec, type RangeSpec, type ResolvedRange } from "@/lib/mrv/dateRanges";
 import { MAPPING_VERSION, parseMapping, type ImportMapping } from "@/lib/mrv/importMapping";
 import { toConfigDrafts, toReadingDrafts, type StoredReading } from "@/lib/mrv/readings";
 import { EVIDENCE_MAX_BYTES, evidenceDocumentBody, evidenceStoragePath, validateEvidenceFile, validateEvidenceMeta } from "@/lib/mrv/evidenceFiles";
@@ -368,7 +368,7 @@ function mappingArg(value: unknown): ImportMapping | null {
   return m;
 }
 
-export async function importFile(caller: MrvCaller, t: string, f: string, file: { filename: string; bytes: Uint8Array; mapping: unknown; format?: unknown }) {
+export async function importFile(caller: MrvCaller, t: string, f: string, file: { filename: string; bytes: Uint8Array; mapping: unknown; format?: unknown; preview?: boolean }) {
   const ctx = await requireFacility(caller, t, f, "upload.create");
   if (file.format != null && file.format !== "daily-totals") throw badRequest("Unknown import format");
   const daily = file.format === "daily-totals";
@@ -385,6 +385,48 @@ export async function importFile(caller: MrvCaller, t: string, f: string, file: 
   }
   const candidate = converted ? converted.store : isJson ? parseDataPackage(new TextDecoder().decode(file.bytes), name) : parseWorkbook(buf, name);
   if (converted && ctx.synthetic) { candidate.meta.synthetic = true; candidate.inputs.meta.synthetic = true; }
+  if (file.preview) {
+    const drafts = candidate._valid ? toReadingDrafts(candidate.inputs, mapping, `${isJson ? "data-package" : "workbook"}:${name}`) : { readings: [], errors: [] };
+    const errors = [...(candidate._valid ? [] : candidate._errors), ...drafts.errors];
+    if (!drafts.readings.length && !errors.length) errors.push("The file contains no readings.");
+    if (candidate.meta.synthetic && !ctx.synthetic) errors.push("Synthetic demo data cannot be imported into a production organization.");
+    const dates = drafts.readings.flatMap(r => [r.interval_start, r.interval_end]).sort();
+    const start = dates[0] ?? null;
+    const end = dates.at(-1) ?? null;
+    const existing = start && end ? await loadReadings(caller, t, f, resolveRange({ preset: "custom", start, end }, { timezone: ctx.timezone })) : [];
+    const byKey = new Map(existing.map(r => [r.record_key, r]));
+    const bySeries = new Map<string, ReadingRow[]>();
+    for (const row of existing) {
+      const series = bySeries.get(row.series_key) ?? [];
+      series.push(row);
+      bySeries.set(row.series_key, series);
+    }
+    const changes: { section: string; start: string; end: string; kind: string; fields: { field: string; before: unknown; after: unknown }[] }[] = [];
+    let unchanged = 0, revisions = 0, overlaps = 0;
+    for (const r of drafts.readings) {
+      const old = byKey.get(r.record_key);
+      if (old) {
+        if (old.content_hash === r.content_hash) unchanged++;
+        else {
+          revisions++;
+          if (changes.length < 20) changes.push({ section: r.section, start: r.interval_start, end: r.interval_end, kind: "Revision", fields: [...new Set([...Object.keys(old.payload), ...Object.keys(r.payload)])]
+            .filter(key => key !== "_source" && JSON.stringify(old.payload[key]) !== JSON.stringify(r.payload[key]))
+            .slice(0, 5).map(field => ({ field, before: old.payload[field] ?? null, after: r.payload[field] ?? null })) });
+        }
+      } else if ((bySeries.get(r.series_key) ?? []).some(e => e.interval_start <= r.interval_end && e.interval_end >= r.interval_start)) {
+        overlaps++;
+        if (changes.length < 20) changes.push({ section: r.section, start: r.interval_start, end: r.interval_end, kind: "Overlapping interval", fields: [] });
+      }
+    }
+    const dailySeries = new Set(drafts.readings.map(r => r.series_key));
+    const missingDailyReadings = converted && start && end
+      ? Math.max(0, daysBetweenInclusive(start, end) * dailySeries.size - drafts.readings.length)
+      : null;
+    return { errors, start, end, changes, missingDailyReadings, count: drafts.readings.length, unchanged, revisions, overlaps,
+      configKinds: toConfigDrafts(candidate.inputs).filter(d => !converted || converted.configKinds.includes(d.kind)).map(d => d.kind),
+      sections: Object.fromEntries(["production", "rawMaterial", "kilnFuel", "electricity", "inventory"].map(section => [section, drafts.readings.filter(r => r.section === section).length])),
+      missingEvidence: drafts.readings.filter(r => !String(r.payload["Evidence ID"] ?? "").trim()).length };
+  }
   const mime = /\.csv$/i.test(name) ? "text/csv" : isJson ? "application/json" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   return recordImport(caller, ctx, t, f, { origin: isJson ? "data-package" : "workbook", candidate, filename: name, bytes: file.bytes, mime, mapping, ...(converted ? { configKinds: converted.configKinds } : {}) });
 }
@@ -500,10 +542,10 @@ export async function listReportImpacts(caller: MrvCaller, t: string, f: string)
 }
 
 // ───────────────────────── Calculations ─────────────────────────
-type ReadingRow = StoredReading & { synthetic: boolean };
+type ReadingRow = StoredReading & { synthetic: boolean; content_hash: string };
 
 const READING_COLUMNS =
-  "id, section, series_key, record_key, observed_on, interval_start, interval_end, granularity, measurement_type, mapping_version, quality_state, payload, synthetic, revision";
+  "id, section, series_key, record_key, observed_on, interval_start, interval_end, granularity, measurement_type, mapping_version, quality_state, payload, synthetic, revision, content_hash";
 
 /** Every CURRENT reading overlapping the range (incl. withdrawn/legacy): selection reports exclusions; the DB pins the set. */
 async function loadReadings(caller: MrvCaller, t: string, f: string, range: ResolvedRange): Promise<ReadingRow[]> {
