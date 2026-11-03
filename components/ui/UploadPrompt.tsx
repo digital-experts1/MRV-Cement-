@@ -7,13 +7,16 @@ import { StaleScopeError, useScope } from "@/context/ScopeContext";
 import { useStore } from "@/context/StoreContext";
 import { downloadBlankTemplate } from "@/lib/export";
 import { importFailureFrom, rejectedImport, scopeChangedDuringImport, type ImportFailure } from "@/lib/mrv/importFailure";
-import { downloadDailyTemplate, parseDailyTotals, type DailyImport } from "@/lib/mrv/dailyTotals";
+import { downloadDailyTemplate } from "@/lib/mrv/dailyTotals";
+import * as XLSX from "xlsx";
+import { mrvFetch } from "@/lib/apiClient";
 import { MappingSelect } from "./MappingSelect";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
-const SUPPORTED = /\.(xlsx|xlsm|json)$/i;
+const SUPPORTED = /\.(xlsx|xlsm|json|csv)$/i;
+interface Review { errors: string[]; start: string | null; end: string | null; count: number; unchanged: number; revisions: number; overlaps: number; configKinds: string[]; sections: Record<string, number>; missingEvidence: number; missingDailyReadings: number | null; changes: { section: string; start: string; end: string; kind: string; fields: { field: string; before: unknown; after: unknown }[] }[] }
 
-export function UploadPrompt() {
+export function UploadPrompt({ droppedFile, clearDroppedFile }: { droppedFile?: File | null; clearDroppedFile?: () => void }) {
   const { uploadOpen, closeUpload, loading, parseError } = useStore();
   const scope = useScope();
   const isSynthetic = scope.memberships.find((m) => m.tenantId === scope.tenantId)?.synthetic ?? false;
@@ -21,7 +24,8 @@ export function UploadPrompt() {
   const [failure, setFailure] = useState<ImportFailure | null>(null);
   const [busy, setBusy] = useState(false);
   const [daily, setDaily] = useState(false);
-  const [preview, setPreview] = useState<{ file: File; result: DailyImport; target: string } | null>(null);
+  const [preview, setPreview] = useState<{ file: File; result: Review; target: string; daily: boolean; mapping: string } | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const [mapping, setMapping] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
   const chooseRef = useRef<HTMLButtonElement>(null);
@@ -32,10 +36,15 @@ export function UploadPrompt() {
     if (!uploadOpen) return;
     const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // Show errors from a page-level drag & drop that opened this dialog.
-    setFailure(parseError);
-    setPreview(null);
-    chooseRef.current?.focus();
-    return () => trigger?.focus();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setFailure(parseError);
+      setPreview(null);
+      setAcknowledged(false);
+      chooseRef.current?.focus();
+    });
+    return () => { cancelled = true; trigger?.focus(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadOpen]);
 
@@ -51,6 +60,15 @@ export function UploadPrompt() {
     return () => document.removeEventListener("keydown", onKey, true);
   }, [uploadOpen, loading, busy, closeUpload]);
 
+  useEffect(() => {
+    if (!uploadOpen || !droppedFile || !ready || loading || busy) return;
+    const file = droppedFile;
+    clearDroppedFile?.();
+    void importFile(file);
+    // The pending dropped file is consumed once, using the active authorized scope.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadOpen, droppedFile, ready]);
+
   if (!uploadOpen) return null;
 
   function close() {
@@ -58,25 +76,38 @@ export function UploadPrompt() {
   }
 
   async function importFile(file: File, confirmed = false) {
-    if (!(daily ? /\.(csv|xlsx|xlsm)$/i : SUPPORTED).test(file.name)) {
-      setFailure(rejectedImport([`"${file.name}" is not a supported file. Choose Excel/JSON in MRV mode, or Excel/CSV in daily totals mode.`]));
-      return;
+    if (!confirmed) { setPreview(null); setAcknowledged(false); }
+    if (!SUPPORTED.test(file.name)) {
+      setFailure(rejectedImport(["Choose an Excel workbook, daily CSV, or MRV JSON data export."])); return;
+    }
+    if (file.size > 20_000_000 || !file.size) {
+      setFailure(rejectedImport(["Choose a non-empty file no larger than 20 MB."])); return;
     }
     setFailure(null);
     setBusy(true);
     try {
-      const target = `${scope.tenantId}/${scope.facility?.id}`;
-      if (daily && !confirmed) {
-        const result = parseDailyTotals(await file.arrayBuffer(), file.name);
-        if (!result.store._valid) { setFailure(rejectedImport(result.store._errors)); setPreview(null); return; }
-        setPreview({ file, result, target });
+      const target = scope.activeKey;
+      if (!confirmed) {
+        const bytes = await file.arrayBuffer();
+        let detectedDaily = /\.csv$/i.test(file.name);
+        if (/\.(xlsx|xlsm)$/i.test(file.name)) {
+          const sheets = XLSX.read(bytes, { type: "array", bookSheets: true }).SheetNames;
+          detectedDaily = sheets.some(s => ["production", "fuel", "electricity"].includes(s.trim().toLowerCase())) && !sheets.includes("00_README_Control");
+        }
+        setDaily(detectedDaily);
+        const query = new URLSearchParams({ filename: file.name, preview: "true" });
+        if (detectedDaily) query.set("format", "daily-totals");
+        else if (mapping) query.set("mapping", mapping);
+        const result = await mrvFetch<Review>(`/orgs/${scope.tenantId}/facilities/${scope.facility?.id}/imports?${query}`, {
+          method: "POST", body: bytes, headers: { "content-type": "application/octet-stream" },
+        });
+        setPreview({ file, result, target, daily: detectedDaily, mapping });
         return;
       }
-      if (daily && preview?.target !== target) {
-        setFailure(rejectedImport(["The selected factory changed. Choose the file again to review its destination."]));
-        setPreview(null); return;
+      if (!preview || preview.target !== target || preview.mapping !== mapping || preview.result.errors.length || !acknowledged) {
+        setFailure(rejectedImport(["Review the file again and confirm its destination before importing."])); return;
       }
-      const result = await scope.importFile(file, daily ? null : mapping || null, daily ? "daily-totals" : undefined);
+      const result = await scope.importFile(file, preview.daily ? null : mapping || null, preview.daily ? "daily-totals" : undefined);
       if (result.accepted) closeUpload();
       else setFailure(rejectedImport(result.errors));
     } catch (e) {
@@ -143,9 +174,10 @@ export function UploadPrompt() {
 
         <h2 id="upload-dialog-title">Upload readings</h2>
         <div id="upload-dialog-desc">
-          <p>Choose your format, then upload a file.</p>
+          <p>Choose a file, review its contents, then confirm import. Choosing a file does not save readings.</p>
+          <ol className="upload-steps" aria-label="Import progress"><li>1. Choose file</li><li aria-current={preview ? "step" : undefined}>2. Review data</li><li>3. Confirm import</li></ol>
           {ready ? (
-            <p className="upload-target">Factory: <strong>{scope.facility?.code} · {scope.facility?.name}</strong></p>
+            <p className="upload-target">Organization: <strong>{scope.memberships.find(m => m.tenantId === scope.tenantId)?.name}</strong><br />Factory: <strong>{scope.facility?.code} · {scope.facility?.name}</strong></p>
           ) : (
             <div className="dataset-banner dataset-banner-warn">
               {scope.status === "signed-out" ? (
@@ -163,39 +195,52 @@ export function UploadPrompt() {
           )}
         </div>
 
-        {ready ? <label className="mapping-select">
-          <span>Import format</span>
-          <select className="form-input" aria-label="Import format" disabled={loading || busy} value={daily ? "daily" : "mrv"}
-            onChange={e => { setDaily(e.target.value === "daily"); setPreview(null); setFailure(null); }}>
-            <option value="mrv">MRV workbook or JSON data export</option>
-            <option value="daily">Daily totals — Excel or CSV</option>
-          </select>
-        </label> : null}
-        {ready && !daily ? <MappingSelect id="upload-mapping" value={mapping} onChange={setMapping} /> : null}
-        
-        {preview && daily ? <div className="daily-import-preview" role="status">
+        {ready && !daily ? <details className="upload-help"><summary>Workbook intervals and units</summary>
+          <p className="upload-note">Declare how dated workbook rows should be interpreted. Daily files supply their own one-day intervals. Changing these settings requires a new review.</p>
+          <fieldset disabled={busy || loading} style={{ border: 0, padding: 0 }}><MappingSelect id="upload-mapping" value={mapping} onChange={v => { setMapping(v); setPreview(null); setAcknowledged(false); }} /></fieldset>
+        </details> : null}
+        {preview ? <section className="daily-import-preview" aria-label="Import review">
+          <h3>Review before importing</h3>
           <strong>{preview.file.name}</strong>
-          <p>{preview.result.start} – {preview.result.end}: {Object.entries(preview.result.counts).map(([s,n]) => `${n} ${s.toLowerCase()} readings`).join(", ")}</p>
-          <p>Target: {scope.facility?.code} · {scope.facility?.name}. {preview.result.configKinds.length ? "This file also supplies setup/constants versions." : "Existing setup and constants will be used; configure them first if missing."}</p>
-          <button type="button" className="btn btn-primary" disabled={busy || loading || !scope.canImport || preview.target !== `${scope.tenantId}/${scope.facility?.id}`} onClick={() => void importFile(preview.file, true)}>Import daily readings</button>
-        </div> : null}
+          <p>Detected format: {preview.daily ? "Daily totals" : "MRV workbook / data export"}</p>
+          <p>Destination: <strong>{scope.facility?.code} · {scope.facility?.name}</strong><br />Selected reporting period: {scope.range?.start} – {scope.range?.end} ({scope.facility?.timezone})</p>
+          <p>File coverage: {preview.result.start ?? "Not available"} – {preview.result.end ?? "Not available"}.</p>
+          <dl className="upload-review-counts">{Object.entries(preview.result.sections).filter(([,n]) => n > 0).map(([section,n]) => <div key={section}><dt>{section === "kilnFuel" ? "Fuel" : section === "rawMaterial" ? "Raw materials" : section}</dt><dd>{n} readings</dd></div>)}</dl>
+          {preview.result.start && preview.result.end && scope.range && (preview.result.start < scope.range.start || preview.result.end > scope.range.end) ? <p className="dataset-banner dataset-banner-warn">This file includes dates outside the selected reporting period. Confirmation imports all valid file readings.</p> : null}
+          {preview.result.missingDailyReadings !== null && preview.result.missingDailyReadings > 0 ? <p>{preview.result.missingDailyReadings} missing daily readings within file coverage, assuming each detected line or meter reports every day. This does not establish coverage of all factory sources.</p> : null}
+          <p>{preview.result.count - preview.result.unchanged - preview.result.revisions - preview.result.overlaps} new · {preview.result.unchanged} unchanged · {preview.result.revisions} changed values · {preview.result.overlaps} overlapping intervals</p>
+          {preview.result.changes.length ? <details className="upload-help"><summary>Review changed values and overlapping dates ({preview.result.revisions + preview.result.overlaps}; showing up to 20)</summary>
+            <ul>{preview.result.changes.map((change, i) => <li key={i}><strong>{change.kind}: {change.section}, {change.start} – {change.end}</strong>
+              <ul>{change.fields.map(field => <li key={field.field}>{field.field}: {String(field.before ?? "Empty")} → {String(field.after ?? "Empty")}</li>)}</ul>
+            </li>)}</ul>
+          </details> : null}
+          {preview.result.revisions || preview.result.overlaps ? <p>Changed values create revisions. Review overlapping intervals before continuing.</p> : null}
+          {preview.result.missingEvidence > 0 ? <p>{preview.result.missingEvidence} readings have no Evidence ID. Link their source documents before report review.</p> : null}
+          <p>{preview.result.configKinds.length ? `Configuration supplied by this file: ${preview.result.configKinds.join(", ")}. These will be versioned on import.` : "This file supplies readings only; existing setup and constants are preserved."}</p>
+          {preview.result.errors.length ? <div className="error-banner" role="alert"><strong>Resolve these issues before importing</strong><ul>{preview.result.errors.slice(0,50).map((e,i) => <li key={i}>{e}</li>)}</ul><p>Correct the source file or interval settings, then choose the file again.</p></div> : <>
+          <label><input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} disabled={busy} /> I reviewed the destination, dates, configuration and changed readings.</label>
+          <button type="button" className="btn btn-primary" disabled={busy || loading || !scope.canImport || preview.target !== scope.activeKey || !acknowledged} onClick={() => void importFile(preview.file, true)}>Confirm and import {preview.result.count} readings</button>
+          </>}
+          {preview.target !== scope.activeKey ? <p role="alert">Factory or reporting period changed. Choose the file again before importing.</p> : null}
+          <p className="upload-note">The server validates again on confirmation. Importing does not approve or externally verify a report.</p>
+        </section> : null}
 
         <div style={{ margin: "18px 0 10px" }}>
           <button
             ref={chooseRef}
             type="button"
-            className="btn btn-primary"
+            className={preview ? "btn btn-secondary" : "btn btn-primary"}
             style={{ fontSize: 14, padding: "12px 24px", width: "100%", minHeight: 48 }}
             onClick={() => inputRef.current?.click()}
             disabled={loading || busy || !ready || !scope.canImport}
           >
             {loading || busy ? (
               <>
-                <span className="spinner spinner-sm" aria-hidden="true" /> Reading workbook…
+                <span className="spinner spinner-sm" aria-hidden="true" /> Processing file…
               </>
             ) : (
               <>
-                <Icon name="upload" size={16} /> Choose file
+                <Icon name="upload" size={16} /> {preview ? "Choose another file" : "Choose file"}
               </>
             )}
           </button>
@@ -203,7 +248,7 @@ export function UploadPrompt() {
             ref={inputRef}
             type="file"
             id="file-input-modal"
-            accept={daily ? ".xlsx,.xlsm,.csv" : ".xlsx,.xlsm,.json"}
+            accept=".xlsx,.xlsm,.csv,.json"
             tabIndex={-1}
             aria-hidden="true"
             style={{ display: "none" }}
@@ -216,7 +261,7 @@ export function UploadPrompt() {
         </div>
 
         <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginBottom: 14 }} aria-live="polite">
-          {loading || busy ? "Uploading, validating, storing readings and calculating on the server…" : (daily ? "Excel or CSV · Drag & drop also supported" : "Excel or JSON · Drag & drop also supported")}
+          {loading || busy ? "Processing on the server. Readings are saved only after confirmation…" : (daily ? "Excel or CSV · Drag & drop also supported" : "Excel or JSON · Drag & drop also supported")}
         </div>
 
         {failure?.kind === "scope" ? (
@@ -243,9 +288,10 @@ export function UploadPrompt() {
             <Icon name="edit-3" size={12} /> Fill online
           </Link>
           <span aria-hidden="true" style={{ color: "var(--border-strong)" }}>•</span>
-          <button type="button" className="upload-link" onClick={daily ? downloadDailyTemplate : downloadBlankTemplate}>
-            <Icon name="download" size={11} /> {daily ? "Daily totals template" : "Blank template"}
+          <button type="button" className="upload-link" onClick={downloadBlankTemplate}>
+            <Icon name="download" size={11} /> MRV template
           </button>
+          <button type="button" className="upload-link" onClick={downloadDailyTemplate}><Icon name="download" size={11} /> Daily totals template</button>
         </div>
 
         <details className="upload-help">
