@@ -83,7 +83,7 @@ function PortfolioContent({ tenantId, start, end }: { tenantId: string; start: s
         <div><strong>{rows.length - ready.length}</strong><span>Need attention</span></div>
       </section>
       <div className="portfolio-toolbar"><label>Find a factory<input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Factory name or code" /></label><label className="portfolio-toggle"><input type="checkbox" checked={onlyIssues} onChange={e => setOnlyIssues(e.target.checked)} /> Show only factories needing attention</label></div>
-      <PortfolioPerformance start={start} end={end} factories={visible.map(r => ({
+      <PortfolioPerformance allowTotals={allComparable} start={start} end={end} factories={visible.map(r => ({
         id: r.facility.id, name: r.facility.name, code: r.facility.code, current: current.includes(r), issues: issues(r).length,
         values: Object.fromEntries(PORTFOLIO_METRICS.map(m => [m.key, current.includes(r) ? portfolioValue(r.view, m.key) : null])),
       }))} openFactory={id => { const row = visible.find(r => r.facility.id === id); if (row) open(row); }} />
