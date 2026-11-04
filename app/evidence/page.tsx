@@ -5,7 +5,7 @@
  * evidence_document rows. References can be registered before any calculation exists — no readings are fabricated.
  * "Mapped" always means linked only: neither the register nor a stored document establishes external verification.
  */
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useScope } from "@/context/ScopeContext";
@@ -17,6 +17,7 @@ import { setupDisplay } from "@/lib/setupView";
 import { createEmptyInput, type SheetRow, type Store } from "@/lib/types";
 import type { EvidenceDocumentView } from "@/lib/mrv/clientTypes";
 import { EvidenceDocuments, uploadEvidenceDocumentFile } from "./EvidenceDocuments";
+import styles from "./EvidenceWorkspace.module.css";
 
 const FIELDS = ["Evidence ID", "Evidence Type", "Description", "Source System", "Owner", "Reviewer", "Frequency", "Document URL", "Notes"];
 
@@ -31,7 +32,12 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
   const params = useSearchParams();
   const [search, setSearch] = useState(params.get("id") ?? "");
   const [status, setStatus] = useState("");
+  const [fileFilter, setFileFilter] = useState("");
   const [draft, setDraft] = useState<SheetRow | null>(null);
+  const draftPanel = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (draft) draftPanel.current?.querySelector<HTMLInputElement>("input:not([readonly])")?.focus();
+  }, [!!draft]);
   const [editId, setEditId] = useState<string | null>(null);
   const [link, setLink] = useState(false);
   const [category, setCategory] = useState<(typeof EVIDENCE_SECTIONS)[number][1]>("production");
@@ -47,8 +53,17 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
   const [end, setEnd] = useState(String(s?.setup["Period end"] ?? ""));
 
   const coverage = evidenceCoverage(input);
+  const currentDocuments = documents?.filter((d) => d.isCurrent) ?? [];
+  const attachedIds = new Set(currentDocuments.map((d) => d.evidenceId));
+  const total = coverage.readings.length;
+  const linkedPercent = total ? Math.round(coverage.linked.length / total * 100) : 0;
+  const pending = total - coverage.linked.length - coverage.noId.length - coverage.unknown.length;
+  const fmt = (value: number) => value.toLocaleString();
+  const clearFilters = () => { setSearch(""); setStatus(""); setFileFilter(""); };
   const rows = registerRows.filter(
-    (r) => (!status || r.Status === status) && JSON.stringify(r).toLowerCase().includes(search.toLowerCase())
+    (r) => (!status || r.Status === status)
+      && (!fileFilter || (fileFilter === "attached" ? attachedIds.has(String(r["Evidence ID"] ?? "").trim()) : !attachedIds.has(String(r["Evidence ID"] ?? "").trim())))
+      && JSON.stringify(r).toLowerCase().includes(search.toLowerCase())
   );
 
   function edit(row?: SheetRow) {
@@ -80,6 +95,7 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
               { evidenceId: id },
               () => {}
             );
+            onDocumentsChanged();
             setMessage("Evidence reference and document saved. Review the updated calculation and linkage checks.");
           } catch (e) {
             setMessage(`Reference saved, but the document upload failed: ${e instanceof Error ? e.message : "unknown error"}. Retry from the reference's Documents panel.`);
@@ -124,13 +140,17 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
   }
 
   return (
-    <div className="page-container dcs-workspace">
+    <div className={`page-container dcs-workspace ${styles.workspace}`}>
+      <div className={styles.heading}>
+      <div>
+      <span className={styles.eyebrow}>REPORTS & ASSURANCE</span>
       <PageHeader
         icon="folder"
         title="Evidence Register"
         desc="Manage document references, upload their files and trace links to the selected calculation’s readings."
       />
-      <div className="dcs-intro">
+      </div>
+      <div className={`dcs-intro ${styles.actions}`}>
         <button className="btn btn-primary" disabled={!scope.canImport || busy} onClick={() => edit()}>
           Add evidence
         </button>
@@ -140,30 +160,56 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
         <Link href="/qaqc">Review evidence QA/QC</Link>
       </div>
 
-      <section className="section-card dcs-summary">
+      </div>
+      <section aria-label="Evidence summary" className={`section-card dcs-summary ${styles.metrics}`}>
         <div>
-          <strong>{registerRows.length}</strong>
+          <strong>{fmt(registerRows.length)}</strong>
           <span>Registered references</span>
         </div>
         <div>
-          <strong>{coverage.linked.length}</strong>
+          <strong>{fmt(coverage.linked.length)}</strong>
           <span>Readings linked to mapped references</span>
         </div>
         <div>
-          <strong>{coverage.noId.length}</strong>
+          <strong>{fmt(coverage.noId.length)}</strong>
           <span>Readings without an evidence ID</span>
         </div>
         <div>
-          <strong>{coverage.unknown.length}</strong>
+          <strong>{fmt(coverage.unknown.length)}</strong>
           <span>Readings citing an unknown ID</span>
         </div>
       </section>
 
-      <p>
-        Counts cover production, raw materials, fuel and electricity in the displayed calculation. “Mapped” means linked only. Document contents, reviewer names and
-        URLs do not establish external verification. {s ? "" : "No calculation exists yet for this factory — references registered here are kept and used once readings and calculations arrive; no readings are fabricated for them. "}
-        Evidence files are stored privately; preview links are short-lived and created only for signed-in members of this organization.
-      </p>
+      <div className={styles.overview}>
+        <section className={styles.panel} aria-labelledby="evidence-coverage-title">
+          <div className={styles.panelHeading}><div><span className={styles.eyebrow}>READING TRACEABILITY</span><h2 id="evidence-coverage-title">Evidence linkage</h2></div><span className={styles.scopeTag}>Selected calculation</span></div>
+          <div className={styles.coverageBody}>
+            <div className={styles.ring} role="img" aria-label={total ? `${linkedPercent}% of ${fmt(total)} readings link to mapped references` : "No readings available"} style={{ background: `conic-gradient(#198178 ${linkedPercent}%, #edf1f5 0)` }}>
+              <div><strong>{total ? `${linkedPercent}%` : "—"}</strong><span>{total ? "linked to mapped" : "No readings"}</span></div>
+            </div>
+            <dl className={styles.legend}>
+              <div><dt><i className={styles.mapped} />Mapped reference</dt><dd>{fmt(coverage.linked.length)}</dd></div>
+              <div><dt><i className={styles.pending} />Reference needs mapping</dt><dd>{fmt(pending)}</dd></div>
+              <div><dt><i className={styles.missing} />No evidence ID</dt><dd>{fmt(coverage.noId.length)}</dd></div>
+              <div><dt><i className={styles.unknown} />Unknown evidence ID</dt><dd>{fmt(coverage.unknown.length)}</dd></div>
+            </dl>
+          </div>
+          <p className={styles.caption}>Linkage tracks references, not document validity or external verification.</p>
+        </section>
+        <section className={styles.panel} aria-labelledby="evidence-next-title">
+          <span className={styles.eyebrow}>NEXT STEPS</span><h2 id="evidence-next-title">Build a traceable evidence trail</h2>
+          <ol className={styles.steps}>
+            <li><span>01</span><div><strong>Register the source</strong><p>Give each invoice, certificate or measurement record a unique evidence ID.</p></div></li>
+            <li><span>02</span><div><strong>Attach the supporting file</strong><p>Keep documents private, with previous versions retained.</p></div></li>
+            <li><span>03</span><div><strong>Connect the readings</strong><p>Link only the input category and dates supported by that document.</p></div></li>
+          </ol>
+          <a href="#evidence-gaps" className={styles.textLink}>Inspect evidence gaps ↓</a>
+        </section>
+      </div>
+      <details className={styles.assurance}>
+        <summary>Scope, privacy & verification</summary>
+        <p>Counts cover production, raw materials, fuel and electricity in the displayed calculation. “Mapped” means linked only. Document contents, reviewer names and URLs do not establish external verification. {s ? "" : "No calculation exists yet for this factory. References are kept for use when readings arrive. "}Evidence files are stored privately; preview links are short-lived and available only to signed-in organization members.</p>
+      </details>
       {message && (
         <div className="dcs-message" role="status">
           {message}
@@ -171,14 +217,15 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
       )}
 
       {draft && (
-        <section className="section-card dcs-review">
+        <section ref={draftPanel} className="section-card dcs-review">
           <h2>{editId ? "Edit evidence reference" : "Add evidence"}</h2>
           <fieldset disabled={busy}>
             <div className="dcs-form-grid">
               {FIELDS.map((field) => (
                 <label key={field}>
-                  {field}
+                  {field}{["Evidence ID", "Description", "Owner"].includes(field) ? " *" : ""}
                   <input
+                    required={["Evidence ID", "Description", "Owner"].includes(field)}
                     value={String(draft[field] ?? "")}
                     readOnly={field === "Evidence ID" && !!editId}
                     type={field === "Document URL" ? "url" : "text"}
@@ -239,8 +286,8 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
         </section>
       )}
 
-      <section className="section-card dcs-review">
-        <h2>Document references</h2>
+      <section className={`section-card dcs-review ${styles.register}`} aria-labelledby="document-references-title">
+        <div className={styles.panelHeading}><div><span className={styles.eyebrow}>DOCUMENT LIBRARY</span><h2 id="document-references-title">Document references</h2></div><span className={styles.scopeTag}>{rows.length} of {registerRows.length} references</span></div>
         <div className="dcs-filter">
           <label>
             Search references
@@ -255,17 +302,25 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
               ))}
             </select>
           </label>
-          <button className="btn btn-secondary" onClick={() => { setSearch(""); setStatus(""); }}>
+          <label>
+            Supporting file
+            <select value={fileFilter} disabled={documents === null} onChange={(e) => setFileFilter(e.target.value)}>
+              <option value="">All references</option><option value="attached">File attached</option><option value="missing">No file attached</option>
+            </select>
+          </label>
+          <button className="btn btn-secondary" onClick={clearFilters}>
             Clear filters
           </button>
         </div>
+        {documents === null && <p role="status" className={styles.caption}>Document information is unavailable or still loading. <button type="button" className={styles.textLink} onClick={onDocumentsChanged}>Refresh documents</button></p>}
         {!rows.length ? (
-          <div className="dcs-preview">
+          <div className={styles.empty}>
+            <span className={styles.eyebrow}>EVIDENCE WORKSPACE</span>
             <h3>{registerRows.length ? "No matching references" : "No evidence references registered"}</h3>
             <p>
-              Add actual document references such as electricity invoices, fuel delivery records, laboratory certificates or calibration records. Synthetic demo readings
-              are not documentary evidence.
+              {registerRows.length ? "Try another search or clear the filters to see your registered references." : "Start with an electricity invoice, fuel delivery record, laboratory certificate or calibration record. Synthetic demo readings are not documentary evidence."}
             </p>
+            <button className="btn btn-primary" disabled={!registerRows.length && (!scope.canImport || busy)} onClick={registerRows.length ? clearFilters : () => edit()}>{registerRows.length ? "Clear filters" : "Add your first evidence reference"}</button>
           </div>
         ) : (
           <div className="dcs-scroll">
@@ -297,7 +352,7 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
                         {setupDisplay(r["Source System"])}
                         <p>{setupDisplay(r.Owner)}</p>
                       </td>
-                      <td>{setupDisplay(r.Status)}</td>
+                      <td><span className={r.Status === "Mapped" ? styles.mappedBadge : styles.pendingBadge}>{setupDisplay(r.Status)}</span></td>
                       <td>
                         <details>
                           <summary>{associated.length} reading links</summary>
@@ -305,7 +360,7 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
                         </details>
                       </td>
                       <td>
-                        <EvidenceDocuments evidenceId={id} docs={documentsFor(id)} onChanged={onDocumentsChanged} canUpload={scope.canImport} />
+                        {documents === null ? <span>Document information unavailable</span> : <EvidenceDocuments evidenceId={id} docs={documentsFor(id)} onChanged={onDocumentsChanged} canUpload={scope.canImport} />}
                       </td>
                       <td>
                         {url && (
@@ -330,8 +385,16 @@ function EvidenceContent({ s, fallbackRegister, documents, onRegisterChanged, on
         )}
       </section>
 
-      <section className="section-card dcs-review">
-        <h2>Evidence gaps by input</h2>
+      <section id="evidence-gaps" className={`section-card dcs-review ${styles.gaps}`}>
+        <div className={styles.panelHeading}><div><span className={styles.eyebrow}>COVERAGE BY INPUT</span><h2>Evidence gaps by input</h2></div><Link href="/dcs" className={styles.textLink}>Explore source readings →</Link></div>
+        <div className={styles.categoryGrid}>
+          {EVIDENCE_SECTIONS.map(([label, key]) => {
+            const count = input[key].length;
+            const linked = coverage.linked.filter((x) => x.key === key).length;
+            const percent = count ? Math.round(linked / count * 100) : 0;
+            return <div key={key} className={styles.category}><div><strong>{label}</strong><span>{count ? `${percent}%` : "No readings"}</span></div><progress aria-label={`${label} mapped reading linkage`} max={count || 1} value={linked} /><p>{fmt(linked)} of {fmt(count)} readings linked to mapped references</p></div>;
+          })}
+        </div>
         <div className="dcs-scroll">
           <table className="data-table">
             <thead>
