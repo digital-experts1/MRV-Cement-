@@ -8,4 +8,5 @@ async function handle(req: Request, { params }: { params: Promise<{ path: string
   return dispatchMrv(req, "/" + path.map(encodeURIComponent).join("/"));
 }
 
-export { handle as GET, handle as POST, handle as PUT };
+export { handle as GET, handle as POST, handle as PUT, handle as PATCH };
+
