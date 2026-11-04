@@ -38,20 +38,11 @@ export function ScopeBar() {
   const tenant = s.memberships.find((m) => m.tenantId === s.tenantId);
   return (
     <>
-      <div className="scope-bar" aria-label="Active scope">
+      <section className="scope-bar organization-context" aria-label="Active organization and reporting scope">
         <label className="scope-field">
           <span className="scope-label">Organization</span>
-          {s.memberships.length > 1 ? (
-            <select className="scope-select" value={s.tenantId ?? ""} onChange={(e) => s.selectTenant(e.target.value)}>
-              {s.memberships.map((m) => (
-                <option key={m.tenantId} value={m.tenantId}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <span className="scope-value">{tenant?.name ?? "No organization"}</span>
-          )}
+          <span className="scope-value">{tenant?.name ?? "No organization"}</span>
+          <span className="scope-muted">{tenant?.synthetic ? "Demo organization · synthetic data" : "Organization workspace"}</span>
         </label>
         <label className="scope-field">
           <span className="scope-label">Factory</span>
@@ -73,18 +64,12 @@ export function ScopeBar() {
             <RangeSelector spec={s.rangeSpec} resolved={s.range} timezone={s.facility.timezone} onChange={s.selectRange} disabled={s.calculating} />
           </div>
         ) : null}
-        {tenant?.synthetic ? <span className="badge badge-info" style={{ fontSize: 10.5 }}>Demo organization</span> : null}
-        <span className="scope-user" title={s.user?.email}>
-          {s.user?.displayName}
-        </span>
-        <Link className="btn btn-secondary btn-sm" href="/onboarding" title="Create another organization">
-          +
-        </Link>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void s.signOut()}>
-          Sign out
-        </button>
-        {s.error ? <span className="badge badge-warn" title={s.error}>Error: {s.error.slice(0, 60)}</span> : null}
-      </div>
+        <div className="organization-context-footer">
+          <span><Icon name="info" size={14} /> Factory controls apply to <strong>{s.facility?.name ?? "the selected factory"}</strong></span>
+          <Link href="/setup">Manage reporting setup →</Link>
+        </div>
+        {s.error ? <span className="organization-context-error" role="alert">{s.error}</span> : null}
+      </section>
       {s.facility ? <RunStatus /> : null}
     </>
   );

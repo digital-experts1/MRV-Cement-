@@ -1,5 +1,7 @@
 "use client";
 
+import { OrganizationSwitcher } from "./OrganizationSwitcher";
+import { useScope } from "@/context/ScopeContext";
 import { useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -10,6 +12,7 @@ import { NAV_SECTIONS, ROUTES } from "@/lib/routes";
 
 export function Sidebar() {
   const pathname = usePathname();
+  const scope = useScope();
   const { toggleSidebar, closeNav, openUpload } = useStore();
   const { showExplanation } = useExplainer();
 
@@ -32,6 +35,7 @@ export function Sidebar() {
           <Icon name="chevron-left" size={14} />
         </button>
       </div>
+      <OrganizationSwitcher />
       <nav className="sidebar-nav" id="sidebar-nav" role="list">
         {NAV_SECTIONS.map((sec) => (
           <div key={sec.label}>
@@ -65,6 +69,7 @@ export function Sidebar() {
         ))}
       </nav>
       <div className="sidebar-footer">
+        {scope.user ? <div className="organization-account"><strong title={scope.user.email}>{scope.user.displayName || scope.user.email}</strong><Link href="/admin/access">Account &amp; access</Link><button type="button" onClick={() => void scope.signOut()}>Sign out</button></div> : null}
         <button
           type="button"
           className="sidebar-upload-btn"
