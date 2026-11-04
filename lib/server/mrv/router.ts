@@ -2,7 +2,7 @@ import { isAllowedRequestOrigin } from "@/lib/server/requestOrigin";
 import { badRequest, HttpError, notFound, unauthenticated } from "@/lib/server/authz/errors";
 import { authenticateRequest, type MrvCaller } from "@/lib/server/supabase/auth";
 import {
-  acceptInvitation, archiveDataset, calculateRange, createOrganization, onboardOrganization, evidenceDocumentUrl, facilitySummary, getMe, importDemo,
+  getOrganization, updateOrganization, acceptInvitation, archiveDataset, calculateRange, createOrganization, onboardOrganization, evidenceDocumentUrl, facilitySummary, getMe, importDemo,
   importFile, importManual, invitationPreview, inviteMember, latestRun, listEvidenceDocuments, listEvidenceRegister,
   listFacilities, listImports, listInvitations, listMembers, listReportImpacts, listRuns, loadRun, readingHistory,
   revokeInvitation, revokeMemberAccess, savePreference, setMemberRole, uploadEvidenceDocument, withdrawReading,
@@ -35,6 +35,8 @@ const rangeFromQuery = (url: URL): unknown => {
 /** Supabase-backed MRV API (`/api/mrv/*`). Authentication on every request; authorization in the database. */
 const routes: [string, string, Handler][] = [
   ["GET", "/me", ({ caller }) => getMe(caller)],
+  ["GET", "/orgs/:t", ({ caller, params }) => getOrganization(caller, params.t)],
+  ["PATCH", "/orgs/:t", async ({ caller, params, body }) => updateOrganization(caller, params.t, await body())],
   ["POST", "/orgs", async ({ caller, body }) => createOrganization(caller, await body())],
   ["POST", "/onboarding", async ({ caller, body }) => onboardOrganization(caller, await body())],
   ["PUT", "/preference", async ({ caller, body }) => savePreference(caller, await body())],

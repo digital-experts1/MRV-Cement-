@@ -1,0 +1,44 @@
+-- Owner-run synthetic test; final exception rolls back every fixture and edit.
+do $$
+declare a uuid := gen_random_uuid(); b uuid := gen_random_uuid(); t uuid; m uuid; blocked boolean;
+ d jsonb := '{"name":"SYNTHETIC edited organization","country":"Egypt","organizationType":"Cement manufacturer","registrationNumber":"TEST-ONLY"}';
+begin
+ insert into auth.users(id,email) values(a,a::text||'@example.invalid'),(b,b::text||'@example.invalid');
+ perform set_config('request.jwt.claim.sub',a::text,true);
+ perform set_config('request.jwt.claims',jsonb_build_object('sub',a,'role','authenticated')::text,true);
+ execute 'set local role authenticated';
+ t := public.mrv_create_organization('SYNTHETIC org edit test','TEST','Synthetic factory','UTC',true);
+ perform public.mrv_update_organization(t,d,1);
+ if not exists(select 1 from public.tenant where id=t and name=d->>'name' and profile->>'registrationNumber'='TEST-ONLY' and profile_version=2 and synthetic) then raise exception 'save failed'; end if;
+ if not exists(select 1 from public.audit_event where tenant_id=t and action='organization.updated' and actor_id=a) then raise exception 'audit missing'; end if;
+ blocked := false;
+ begin perform public.mrv_update_organization(t,d,1); exception when sqlstate 'MRV09' then blocked := true; end;
+ if not blocked then raise exception 'stale overwrite allowed'; end if;
+ blocked := false;
+ begin perform public.mrv_update_organization(t,d||'{"synthetic":false}',2); exception when invalid_parameter_value then blocked := true; end;
+ if not blocked then raise exception 'workspace type edit allowed'; end if;
+ blocked := false;
+ begin perform public.mrv_update_organization(t,d||'{"name":" "}',2); exception when invalid_parameter_value then blocked := true; end;
+ if not blocked then raise exception 'invalid name allowed'; end if;
+ execute 'reset role';
+ perform set_config('request.jwt.claim.sub',b::text,true);
+ perform set_config('request.jwt.claims',jsonb_build_object('sub',b,'role','authenticated')::text,true);
+ execute 'set local role authenticated';
+ blocked := false;
+ begin perform public.mrv_update_organization(t,d,2); exception when insufficient_privilege then blocked := true; end;
+ if not blocked then raise exception 'cross-tenant edit allowed'; end if;
+ execute 'reset role';
+ insert into public.tenant_membership(tenant_id,user_id) values(t,b) returning id into m;
+ execute 'set local role authenticated';
+ blocked := false;
+ begin perform public.mrv_update_organization(t,d,2); exception when insufficient_privilege then blocked := true; end;
+ if not blocked then raise exception 'non-admin edit allowed'; end if;
+ execute 'reset role';
+ perform set_config('request.jwt.claim.sub','',true);
+ perform set_config('request.jwt.claims','{"role":"anon"}',true);
+ execute 'set local role anon';
+ blocked := false;
+ begin perform public.mrv_update_organization(t,d,2); exception when insufficient_privilege then blocked := true; end;
+ if not blocked then raise exception 'anonymous edit allowed'; end if;
+ raise exception 'ORGANIZATION_EDIT_PASS_ROLLED_BACK';
+end $$;

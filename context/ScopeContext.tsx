@@ -17,6 +17,7 @@ export interface ScopeUser {
   isPlatformAdmin: boolean;
 }
 export interface ScopeMembership {
+  canEdit?: boolean;
   tenantId: string;
   name: string;
   synthetic: boolean;

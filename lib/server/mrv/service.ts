@@ -107,7 +107,7 @@ export async function getMe(caller: MrvCaller) {
   if (pref.error) throw dbFail(pref.error);
   return {
     user: caller.user,
-    organizations: (data ?? []).map((t) => ({ tenantId: t.id as string, name: t.name as string, synthetic: Boolean(t.synthetic) })),
+    organizations: await Promise.all((data ?? []).map(async (t) => ({ tenantId: t.id as string, name: t.name as string, synthetic: Boolean(t.synthetic), canEdit: await can(caller, t.id, null, "members.manage") }))),
     preference: pref.data ? { tenantId: pref.data.tenant_id, facilityId: pref.data.facility_id, range: validateSpec(pref.data.range) } : null,
   };
 }
@@ -1117,4 +1117,19 @@ export async function acceptInvitation(caller: MrvCaller, token: string): Promis
   const { data, error } = await caller.db.rpc("mrv_accept_invitation", { p_token: token });
   if (error) throw dbFail(error);
   return { tenantId: data as string };
+}
+
+export async function getOrganization(caller: MrvCaller, t: string) {
+  await requireManage(caller, t);
+  const { data, error } = await caller.db.from("tenant").select("name, synthetic, profile, profile_version").eq("id", t).single();
+  if (error) throw dbFail(error);
+  return data;
+}
+
+export async function updateOrganization(caller: MrvCaller, t: string, body: Record<string, unknown>) {
+  await requireManage(caller, t);
+  if (Object.keys(body).some(k => !["details", "version"].includes(k)) || !Number.isInteger(body.version) || !body.details || typeof body.details !== "object" || Array.isArray(body.details)) throw badRequest("Invalid organization update");
+  const { error } = await caller.db.rpc("mrv_update_organization", { p_tenant: t, p_details: body.details, p_version: body.version });
+  if (error) throw dbFail(error);
+  return { saved: true };
 }
