@@ -2,7 +2,7 @@ import { isAllowedRequestOrigin } from "@/lib/server/requestOrigin";
 import { badRequest, HttpError, notFound, unauthenticated } from "@/lib/server/authz/errors";
 import { authenticateRequest, type MrvCaller } from "@/lib/server/supabase/auth";
 import {
-  getOrganization, updateOrganization, acceptInvitation, archiveDataset, calculateRange, createOrganization, onboardOrganization, evidenceDocumentUrl, facilitySummary, getMe, importDemo,
+  getFactoryProfile, updateFactoryProfile, getOrganization, updateOrganization, acceptInvitation, archiveDataset, calculateRange, createOrganization, onboardOrganization, evidenceDocumentUrl, facilitySummary, getMe, importDemo,
   importFile, importManual, invitationPreview, inviteMember, latestRun, listEvidenceDocuments, listEvidenceRegister,
   listFacilities, listImports, listInvitations, listMembers, listReportImpacts, listRuns, loadRun, readingHistory,
   revokeInvitation, revokeMemberAccess, savePreference, setMemberRole, uploadEvidenceDocument, withdrawReading,
@@ -41,6 +41,8 @@ const routes: [string, string, Handler][] = [
   ["POST", "/onboarding", async ({ caller, body }) => onboardOrganization(caller, await body())],
   ["PUT", "/preference", async ({ caller, body }) => savePreference(caller, await body())],
   ["GET", "/orgs/:t/facilities", ({ caller, params }) => listFacilities(caller, params.t)],
+  ["GET", "/orgs/:t/facilities/:f/profile", ({ caller, params }) => getFactoryProfile(caller, params.t, params.f)],
+  ["PATCH", "/orgs/:t/facilities/:f/profile", async ({ caller, params, body }) => updateFactoryProfile(caller, params.t, params.f, await body())],
   ["GET", "/orgs/:t/facilities/:f/summary", ({ caller, params }) => facilitySummary(caller, params.t, params.f)],
   ["GET", "/orgs/:t/facilities/:f/imports", ({ caller, params }) => listImports(caller, params.t, params.f)],
   [
