@@ -132,6 +132,7 @@ const ICONS: Record<string, ReactNode> = {
       <line x1="3" y1="18" x2="21" y2="18" />
     </>
   ),
+  "chevron-down": <polyline points="6 9 12 15 18 9" />,
   "chevron-right": <polyline points="9 18 15 12 9 6" />,
   "chevron-left": <polyline points="15 18 9 12 15 6" />,
   "external-link": (
