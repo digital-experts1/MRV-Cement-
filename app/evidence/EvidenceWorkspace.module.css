@@ -55,3 +55,10 @@
 @media(max-width:1200px) { .heading { align-items:flex-start; flex-direction:column; gap:12px; }.actions { justify-content:flex-start; max-width:none; }.coverageBody { gap:20px; }.ring { width:120px; height:120px; padding:11px; }.categoryGrid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:900px) { .overview { grid-template-columns:1fr; }.metrics > div { padding:8px; }.panel,.register,.gaps { padding:18px; } }
 @media(max-width:540px) { .coverageBody { flex-direction:column; align-items:stretch; }.ring { align-self:center; width:150px; height:150px; }.categoryGrid { grid-template-columns:1fr; }.metrics strong { font-size:26px; }.register :global(.dcs-filter) { align-items:stretch; flex-direction:column; }.register :global(.dcs-filter) label:first-child { min-width:0; }.empty { padding:28px 14px; } }
+.workspace { display:flex; flex-direction:column; }
+.workspace :global(.section-card) { margin-bottom:0; }
+.workspace .heading :global(.page-header) { margin-bottom:0; }
+.workspace .steps p { font-size:12px; margin:3px 0 0; line-height:1.5; }
+.workspace .panelHeading h2 { margin-bottom:0; }
+.workspace .assurance summary { padding:0; }
+.workspace .category p { font-size:11px; margin:0; }
