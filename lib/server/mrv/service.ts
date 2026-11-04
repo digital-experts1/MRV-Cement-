@@ -35,6 +35,7 @@ export interface FacilityView {
   name: string;
   timezone: string;
   reporting_boundary: string;
+  profile?: Record<string, string>;
   permissions: string[];
 }
 
@@ -140,7 +141,7 @@ export async function onboardOrganization(caller: MrvCaller, body: Record<string
 export async function listFacilities(caller: MrvCaller, t: string) {
   ids(t);
   const [fac, perms] = await Promise.all([
-    caller.db.from("facility").select("id, code, name, timezone, reporting_boundary").eq("tenant_id", t).order("code").order("id"),
+    caller.db.from("facility").select("id, code, name, timezone, reporting_boundary, profile").eq("tenant_id", t).order("code").order("id"),
     caller.db.rpc("mrv_my_permissions", { p_tenant: t }),
   ]);
   if (fac.error) throw dbFail(fac.error);
@@ -148,7 +149,7 @@ export async function listFacilities(caller: MrvCaller, t: string) {
   const rows = (perms.data ?? []) as { facility_id: string | null; permission: string }[];
   if (!rows.length) throw notFound();
   const facilities: FacilityView[] = (fac.data ?? []).map((f) => ({
-    id: f.id, code: f.code, name: f.name, timezone: f.timezone, reporting_boundary: f.reporting_boundary,
+    id: f.id, code: f.code, name: f.name, timezone: f.timezone, reporting_boundary: f.reporting_boundary, profile: f.profile,
     permissions: rows.filter((r) => r.facility_id === f.id).map((r) => r.permission).sort(),
   }));
   return { facilities, tenantPermissions: rows.filter((r) => r.facility_id === null).map((r) => r.permission).sort() };
@@ -1130,6 +1131,23 @@ export async function updateOrganization(caller: MrvCaller, t: string, body: Rec
   await requireManage(caller, t);
   if (Object.keys(body).some(k => !["details", "version"].includes(k)) || !Number.isInteger(body.version) || !body.details || typeof body.details !== "object" || Array.isArray(body.details)) throw badRequest("Invalid organization update");
   const { error } = await caller.db.rpc("mrv_update_organization", { p_tenant: t, p_details: body.details, p_version: body.version });
+  if (error) throw dbFail(error);
+  return { saved: true };
+}
+
+export async function getFactoryProfile(caller: MrvCaller, t: string, f: string) {
+  await requireFacility(caller, t, f, "facility.read");
+  await requireManage(caller, t);
+  const { data, error } = await caller.db.from("facility").select("name,code,timezone,reporting_boundary,profile,profile_version").eq("tenant_id",t).eq("id",f).single();
+  if (error) throw dbFail(error);
+  return data;
+}
+
+export async function updateFactoryProfile(caller: MrvCaller, t: string, f: string, body: Record<string, unknown>) {
+  await requireFacility(caller, t, f, "facility.read");
+  await requireManage(caller, t);
+  if (Object.keys(body).some(k => !["details","version"].includes(k)) || !Number.isInteger(body.version) || Number(body.version)<1 || !body.details || typeof body.details !== "object" || Array.isArray(body.details)) throw badRequest("Invalid factory update");
+  const { error } = await caller.db.rpc("mrv_update_factory", { p_tenant: t, p_facility: f, p_details: body.details, p_version: body.version });
   if (error) throw dbFail(error);
   return { saved: true };
 }

@@ -28,6 +28,7 @@ export interface ScopeFacility {
   name: string;
   timezone: string;
   reporting_boundary: string;
+  profile?: Record<string, string>;
   permissions: string[];
 }
 
