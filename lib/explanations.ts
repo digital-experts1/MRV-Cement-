@@ -96,6 +96,18 @@ export const EXPLANATIONS: Record<string, Explanation> = {
     whatDoes: "Visualizes emission trends, fuel mix breakdowns, and benchmark comparisons with dynamic filters.",
     whySeeing: "Identifies decarbonization opportunities, alternative fuel potential, and operational outliers.",
   },
+  "nav-organizations": {
+    title: "Organizations",
+    whatIs: "The workspaces your signed-in account belongs to.",
+    whatDoes: "Switches the active organization, opens its factories and access controls, or starts organization setup.",
+    whySeeing: "Each organization has its own factories, members and data. Only authorized memberships are listed.",
+  },
+  "nav-factories": {
+    title: "Factories",
+    whatIs: "A directory of factories available in the active organization.",
+    whatDoes: "Shows factory names, codes, timezones and reporting boundaries, with a link to open each factory.",
+    whySeeing: "The list reflects your factory permissions. Opening a factory updates the active workspace scope.",
+  },
   "nav-portfolio": {
     title: "Portfolio",
     whatIs: "Organization-level view across the factories you are authorized to access.",
