@@ -1493,3 +1493,18 @@
 .daily-import-preview strong { overflow-wrap: anywhere; }
 
 .upload-card-compact #upload-dialog-desc .upload-target { max-width: none; }
+
+/* Onboarding follows the application typography and shared Inter font. */
+.onboarding-workspace {
+  font-family: var(--font-inter), 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.onboarding-factory-image {
+  display: block;
+  width: 100%;
+  max-width: 180px;
+  height: auto;
+  margin: 0 auto 16px;
+  object-fit: contain;
+  filter: invert(1);
+  opacity: .85;
+}

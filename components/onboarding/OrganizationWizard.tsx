@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useScope } from "@/context/ScopeContext";
@@ -61,14 +62,14 @@ export function OrganizationWizard() {
     </label>
   );
   const initials = draft.name.trim().split(/\s+/).slice(0, 2).map(w => w[0]).join("").toUpperCase() || "CO";
-  return <div className={styles.shell}>
+  return <div className={`${styles.shell} onboarding-workspace`}>
     <aside className={styles.rail}>
       <div className={styles.brand}><svg viewBox="240 304 1000 360" role="img" aria-label="EgyTrace Systems — Measure, Report, Verify"><image href="/images/egytrace-logo-white.png" width="1536" height="1024" /></svg><small>Cement MRV</small></div>
       <Link href="/portfolio" className={styles.back}>← Back to portfolio</Link>
       <ol className={styles.steps}>{steps.map(([title, desc], i) => <li key={title} aria-current={step === i ? "step" : undefined} className={step === i ? styles.active : ""}>
         <span>{i < step ? "✓" : `0${i + 1}`}</span><div><strong>{title}</strong><small>{desc}</small></div>
       </li>)}</ol>
-      <div className={styles.railNote}><Icon name="factory" size={80} /><p>Built for cement operations</p></div>
+      <div className={styles.railNote}><Image className="onboarding-factory-image" src="/images/onboarding-factory.png" alt="Industrial factory illustration" width={360} height={360} priority /><p>Built for cement operations</p></div>
     </aside>
     <div className={styles.workspace}>
       <header className={styles.topbar}><strong>Cement MRV</strong><span>Organization setup</span></header>
