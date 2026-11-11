@@ -1,6 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { useScope } from "@/context/ScopeContext";
 import { Icon } from "@/components/icons/Icon";
 import { AssertionsPanel } from "@/components/ui/AssertionsPanel";
 import { MissingBadge } from "@/components/ui/Badge";
@@ -35,8 +36,67 @@ function FlowConnector({ symbol }: { symbol: string }) {
   return <div className={`flow-connector${symbol === "→" ? " arrow" : ""}`}>{symbol}</div>;
 }
 
+function metricNumber(s: Store, key: string): number | null {
+  const raw = s.calculations[key]?.Value;
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function MetricCard({ label, value, unit, digits = 0 }: { label: string; value: number | null; unit: string; digits?: number }) {
+  return (
+    <div style={{ padding: "20px", border: "1px solid var(--border)", borderRadius: 14, background: "var(--surface, var(--bg-card, transparent))", minWidth: 0 }}>
+      <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 }}>{label}</div>
+      <div className="mono" style={{ fontSize: "clamp(22px, 2.4vw, 32px)", fontWeight: 750, lineHeight: 1.2, overflowWrap: "anywhere" }}>
+        {value === null ? "—" : value.toLocaleString("en-US", { maximumFractionDigits: digits, minimumFractionDigits: digits })}
+      </div>
+      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>{unit}</div>
+    </div>
+  );
+}
+
+function EmissionsComposition({ s }: { s: Store }) {
+  const entries = [
+    { name: "Process calcination", value: metricNumber(s, "Selected Process CO2"), color: "#0ea5a4" },
+    { name: "Fuel combustion", value: metricNumber(s, "Fuel Combustion CO2"), color: "#f59e0b" },
+    { name: "Indirect grid", value: metricNumber(s, "Indirect Grid CO2"), color: "#818cf8" },
+  ];
+  const complete = entries.every((e) => e.value !== null && e.value >= 0);
+  const total = complete ? entries.reduce((sum, e) => sum + (e.value ?? 0), 0) : 0;
+  return (
+    <div className="section-card mb-lg">
+      <SectionHeader icon="activity" title="Emissions composition" />
+      <div className="section-card-body">
+        {!complete || total <= 0 ? (
+          <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0 }}>A complete, positive emissions breakdown is not available for this calculation run. Missing values are not treated as zero.</p>
+        ) : (
+          <>
+            <div role="img" aria-label={entries.map(e => `${e.name}: ${((e.value ?? 0) / total * 100).toFixed(1)} percent`).join("; ")}
+              style={{ display: "flex", width: "100%", height: 24, overflow: "hidden", borderRadius: 8, marginBottom: 18 }}>
+              {entries.map(e => <div key={e.name} style={{ width: `${(e.value ?? 0) / total * 100}%`, background: e.color }} />)}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 16 }}>
+              {entries.map(e => (
+                <div key={e.name} style={{ fontSize: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, color: "var(--text-secondary)" }}>
+                    <span style={{ width: 9, height: 9, borderRadius: 3, background: e.color }} />{e.name}
+                  </div>
+                  <strong className="mono" style={{ display: "block", marginTop: 7, fontSize: 17 }}>{((e.value ?? 0) / total * 100).toFixed(1)}%</strong>
+                  <span style={{ color: "var(--text-muted)" }}>{(e.value ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} tCO₂</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CalculationsContent({ s }: { s: Store }) {
   const c = s.calculations;
+  const scope = useScope();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const biogenicRaw = c["Biogenic CO2 Memo"]?.Value;
   const biogenic = typeof biogenicRaw === "number" ? `${fmtDec(biogenicRaw, 2)} tCO₂` : "not calculated";
 
@@ -49,6 +109,33 @@ function CalculationsContent({ s }: { s: Store }) {
         actions={<Chip status={`${s.calcRows.length} computed metrics`} />}
       />
 
+      <div className="section-card mb-lg">
+        <div className="section-card-body" style={{ display: "flex", flexWrap: "wrap", gap: 18, justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--text-muted)" }}>Reporting scope</div>
+            <strong>{scope.facility?.name ?? "Selected facility"}</strong>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
+              {scope.range ? `${scope.range.start} to ${scope.range.end} · ${scope.range.timezone}` : "No reporting range selected"}
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+            {s.meta.run?.stale ? "Stale saved calculation" : s.meta.run ? "Saved calculation run" : "Unpersisted calculation"}
+            <div className="mono" style={{ fontSize: 11, marginTop: 4 }}>{s.meta.run?.id ? `Run ${s.meta.run.id.slice(0, 8)}` : "No run ID"}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 20 }}>
+        <MetricCard label="Total embedded emissions" value={metricNumber(s, "Total Embedded CO2")} unit="tCO₂" digits={2} />
+        <MetricCard label="Cement emissions intensity" value={metricNumber(s, "Specific Embedded Emissions Cement")} unit="tCO₂ / t cement" digits={4} />
+        <MetricCard label="Cement produced" value={metricNumber(s, "Cement Produced")} unit="tonnes" />
+        <MetricCard label="Required data completeness" value={Number.isFinite(s.completeness.pct) ? s.completeness.pct : null} unit="% of required inputs" digits={1} />
+      </div>
+      <EmissionsComposition s={s} />
+      <div style={{ marginBottom: 20, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", fontSize: 12 }}>
+        <span className="badge">{s.readiness.status === "READY_FOR_INTERNAL_REVIEW" ? "Ready for internal review" : "Not ready for review"}</span>
+        <span style={{ color: "var(--text-secondary)" }}>{s.inputIssues.length} rejected inputs · {s.assertions.filter(a => a.outcome === "MISMATCH").length} workbook mismatches</span>
+      </div>
       <AssertionsPanel s={s} />
 
       <div className="section-card mb-lg">
@@ -117,7 +204,7 @@ function CalculationsContent({ s }: { s: Store }) {
 
       <div className="section-card">
         <SectionHeader icon="file-text" title="Full Calculation Chain" />
-        <div className="section-card-body no-pad">
+        {detailsOpen ? <div className="section-card-body no-pad">
           <div className="table-wrapper" style={{ border: "none" }}>
             <table className="data-table">
               <thead>
@@ -153,7 +240,7 @@ function CalculationsContent({ s }: { s: Store }) {
               </tbody>
             </table>
           </div>
-        </div>
+        </div> : null}
       </div>
     </>
   );
